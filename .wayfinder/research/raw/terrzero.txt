@@ -1,0 +1,488 @@
+TerraZero: Procedural Driving Simulation for Zero-Demonstration Self-Play at Scale
+
+  
+
+    
+      TerraZero
+    
+    
+      
+    
+    
+      Demo
+      Simulator
+      Scenarios
+      Recipe & Results
+      Terra Series
+      Research ↗
+    
+  
+
+  
+
+    
+
+      
+Applied Intuition · Technical Report
+      
+TerraZero: Procedural Driving Simulation for Zero-Demonstration Self-Play at Scale
+      
+A fast object-level traffic simulator, a procedural scenario generator, and a compute-efficient self-play recipe that trains driving policies from scratch — with zero human demonstrations — and transfers them across cities and datasets.
+
+      
+
+        
+
+          Zhouchonghao Wu1*, Akshay Rangesh1*, Weixin Li1, Wei-Jer Chang1,2,
+          Zachary Lee1, Saeed Bonab1, Tim Wang1, Wei Zhan1,2†
+        
+        
+1 Applied Intuition  ·  2 UC Berkeley  ·  * equal contribution  ·  † corresponding author
+
+        
+
+          Technical Report
+          arXiv
+        
+      
+    
+  
+
+  
+
+    
+Contributions
+    
+
+      
+
+        
+1
+        
+
+          
+A Fast, Feature-Rich Driving Simulator
+          
+A configurable C engine built for reinforcement learning at scale — high throughput without giving up realism. It models vehicles, pedestrians, cyclists, and high-fidelity trucks together, with real traffic rules and maps in 3D.
+        
+      
+      
+
+        
+2
+        
+
+          
+Hard Scenarios, Generated on Demand
+          
+A procedural generator that treats logged data as a starting point, not a ceiling. From real maps it composes an effectively unbounded supply of training scenarios — randomized starts and goals, reactive road users, and varied traffic-signal timing.
+        
+      
+      
+
+        
+3
+        
+
+          
+Driving Policies Trained From Scratch
+          
+The Zero in TerraZero names the training stance: zero human demonstrations. A compute-efficient self-play recipe learns by reinforcement signal alone — no imitation, no logged trajectories — and every result we report is trained this way. The resulting policies transfer zero-shot across cities and datasets, picking up region-specific habits such as left-hand traffic on their own.
+        
+      
+    
+  
+
+  
+
+    
+Interactive Demo
+    
+Few Maps, Infinite Scenarios
+    
+A handful of real maps becomes an effectively unbounded stream of long-tail scenarios. Compose one with the controls and watch TerraZero drive it: choose the agent type (car, truck, or heterogeneous†), set a traffic condition, drop in road users and hazards, optionally dial in a robustness setting, and pick a viewpoint (agent or top-down) — the simulator procedurally generates the rest, and the selectors narrow to whatever it has on hand.
+    
+† Heterogeneous agents controlled via a unified policy will be released in work in preparation, to appear on arXiv.
+  
+  
+
+    
+
+      
+
+      
+
+        
+
+          
+        
+        
+
+          
+
+          
+
+        
+      
+    
+    
+      
+
+        
+
+          
+▷
+          
+Scenario gallery
+          
+Enable JavaScript to browse rollouts across regions, traffic controls, road users, and camera views.
+        
+      
+    
+  
+
+  
+
+    
+Simulator
+    
+Built for Speed
+    
+Large-scale reinforcement learning needs billions of environment steps. TerraZero is engineered for exactly that: a C simulation engine paired with GPU policy inference, delivering the throughput RL requires without trading away realism.
+    
+
+      
+
+560K
+steps/s · consumer GPU
+      
+
+1.3M
+steps/s · server GPU
+      
+
+2.8M
+steps/s · 8× server node
+    
+    
+Agent steps per second, measured against object-level simulators that report comparable numbers. Hover a bar for the exact value.
+    
+      
+
+        
+
+      
+      Figure 1. Throughput across hardware tiers, in agent steps per second. Values marked with a dagger are reported by the original authors.
+    
+  
+
+  
+
+    
+High-Fidelity Simulation
+    
+Speed never comes at the cost of realism. TerraZero models dynamics for pedestrians, cyclists, vehicles, and high-fidelity trucks; enforces real traffic rules including traffic lights and stop signs; and represents maps in 3D — so policies learn genuine compliance rather than workarounds for scripted flags.
+  
+
+  
+
+    
+Scenario Generation
+    
+The Situations That Matter Most
+    
+Real driving logs are overwhelmingly routine. The rare, high-stakes moments — dense merges, sudden cut-ins, near-miss crossings — are exactly what a driving policy most needs to practice, and exactly what logs contain least. TerraZero generates them on demand: from real maps it builds an effectively unlimited stream of challenging scenarios, with reactive traffic, hazards, and signal timing that change every episode.
+  
+
+  
+
+    
+      
+
+      Figure 2. Procedurally generated road users and hazards: construction and static obstacles, crossing and jaywalking pedestrians, and parked and collided vehicles.
+    
+  
+
+  
+
+    
+Recipe & Results
+    
+
+      
+State-of-the-Art Driving From Self-Play Alone
+      
+
+        
+
+          #1
+          94.19
+          nuPlan val14standard closed-loop
+        
+        
+
+          #1
+          70.87
+          InterPlaninteractive long tail
+        
+      
+    
+    
+TerraZero trains driving policies entirely through self-play reinforcement learning — no human demonstrations, no logged trajectories. Because the simulator is so fast, the recipe trades sample efficiency for compute efficiency: it learns the hard cases from scratch, stays stable at scale, and runs a lightweight policy across many GPUs. One checkpoint, trained with one configuration, tops both the standard val14 benchmark and the interactive long-tail InterPlan suite — a pairing no prior planner achieves — and it transfers to new cities and datasets out of the box.
+  
+
+  
+  
+
+    
+nuPlan val14
+    
+Top of the Standard Benchmark
+    
+Trained exclusively through self-play RL with zero human demonstrations, TerraZero posts the highest val14 score of any planner we compare against — ahead of the hand-engineered rule-based planners that have long topped this benchmark, the hybrids that graft a rule-based scorer onto a learned model, the imitation planners, and the rest of the RL family. The safety terms carry it: the best no-at-fault collision rate (99.02) and the best time-to-collision (95.62) in the field. Bars compare the strongest entry in each planner category; the radar breaks the composite into its eight components.
+    
+
+      
+        
+
+          
+            
+              
+
+                PlannerTypeScoreEgo Prog.No AF-Coll.
+                ComfortTTCDrv. Dir.Speed Lim.Drv. AreaMaking Prog.
+              
+            
+            
+              
+TerraZeroRL94.1992.9199.0297.9495.6299.5199.2799.3799.02
+              
+GigaflowRL93.893.698.496.493.899.699.999.799.0
+              
+FlowDrive w/ guidance + PDM scoringHybrid92.96————————
+              
+G2DP† + refinementHybrid92.92————————
+              
+SPDM (Np=15)Rule92.28————————
+              
+PDM-ClosedRule92.1390.2697.9094.7293.8399.9699.8399.4699.11
+              
+SPDM (Np=60)Rule91.60————————
+              
+CaRLRL90.6091.3097.0588.5592.3199.1599.3699.9199.11
+              
+PLUTOHybrid89.6686.1197.0991.8694.1099.8798.8699.2898.57
+              
+FlowDriveIL85.37————————
+              
+PlannerRFTRL84.46————————
+              
+G2DPIL83.91————————
+              
+Flow PlannerIL83.31————————
+              
+Diffusion Planner*IL82.7385.8893.0789.4588.1999.8298.2997.8596.42
+              
+Log Replay (iLQR)Replay82.0599.3285.6998.9380.7799.2896.4699.55100.00
+              
+IDMRule77.3385.2089.2293.1181.5799.2497.2093.0296.33
+              
+PlanTFIL76.1477.2195.2193.5690.6199.3398.5096.3389.53
+              
+Urban DriverIL53.0587.1772.4599.2866.3796.8781.6683.3694.28
+            
+          
+        
+      
+    
+    Figure 3. Driving-policy evaluation on nuPlan val14 (closed-loop reactive), higher is better, showing the strongest entries from all four planner categories — rule-based, hybrid, imitation, and reinforcement learning. Radar axes run 0–100. An asterisk marks author-retrained variants, † the history-free G2DP variant with rule-based post-hoc refinement, and Np the SPDM proposal budget. TerraZero is, to our knowledge, the first policy trained purely by large-scale self-play to outscore the dedicated nuPlan planners that top this benchmark.
+
+    
+
+      
+        
+        Watch TerraZero drive val14 scenarios
+        
+      
+      
+
+        
+
+        
+
+      
+    
+  
+
+  
+  
+
+    
+InterPlan
+    
+State-of-the-Art on the Long Tail
+    
+The same checkpoint, with no retraining, also leads InterPlan's long-tail closed-loop suite — construction zones, accident sites, jaywalkers, nudging, overtaking, and dense lane changes — ahead of every rule-based, imitation, hybrid, and RL baseline, and ahead of the LLM-based planners, using no rule-based planner and no language model at inference. Prior planners trade one benchmark for the other: SPDM reaches 63.66 here only at its widest 60-proposal budget, which gives back val14, while the 15-proposal setting that peaks on val14 scores 42.00 on the long tail.
+    
+
+      
+        
+
+          
+            
+MethodTypeScore
+            
+              
+TerraZeroRL70.87
+              
+SPDM (Np=60)Rule63.66
+              
+HybridLLMPlanner (Llama-7B)Hybrid53
+              
+HybridLLMPlanner (Llama-13B)Hybrid48
+              
+FlowDrive w/ guidance + PDM scoringHybrid44.05
+              
+PDM+PPOHybrid43.2
+              
+PPORL42.1
+              
+PDM-ClosedRule42
+              
+SPDM (Np=15)Rule42.00
+              
+HybridLLMPlanner (GPT-3.5)Hybrid40
+              
+FlowDriveIL36.96
+              
+IDMRule31
+              
+IDM+MOBILRule31
+              
+Diffusion PlannerIL25.8
+            
+          
+        
+      
+    
+    Figure 4. InterPlan long-tail closed-loop reactive score (higher is better) on the official 80-scenario split, comparing the top contenders across planner categories. TerraZero uses no rule-based planner or language model at inference. On the full 335-scenario set the same checkpoint scores 71.31.
+
+    
+
+      
+        
+        Watch TerraZero drive InterPlan scenarios
+        
+      
+      
+
+        
+
+        
+
+      
+    
+  
+
+  
+  
+
+    
+WOSAC
+    
+Sim-Agent Evaluation
+    
+As a sim agent, TerraZero is the strongest method that uses no demonstrations at all — no imitation and no reference policy — matching SPACeR and beating HR-PPO, which both derive from a reference policy trained on logged data. The demonstration-based CAT-K and the logged expert (dashed) are shown for reference.
+    
+
+      
+
+        
+WOSAC 2023
+        
+
+          
+            
+
+              
+                
+MethodTypeRealism Meta
+                
+                  
+Expert DemonstrationReference0.722
+                  
+TerraZeroRL0.632
+                  
+GigaflowRL0.619
+                
+              
+            
+          
+        
+      
+      
+
+        
+WOSAC 2024
+        
+
+          
+            
+
+              
+                
+MethodTypeRealism
+                
+                  
+Expert DemonstrationDemonstration-based0.80
+                  
+CAT-KDemonstration-based0.766
+                  
+SPACeRRL (demonstration-derived)0.741
+                  
+TerraZeroRL0.740
+                  
+HR-PPORL (demonstration-derived)0.716
+                
+              
+            
+          
+        
+      
+    
+    
+
+      TerraZero
+      RL
+      RL (Demonstration-derived)
+      Demonstration-based
+    
+    Figure 5. Sim-agent realism on the Waymo Open Sim Agents Challenge, evaluated zero-shot (higher is better). Solid RL bars use no demonstrations at all; shaded RL bars derive from a reference policy trained on logged data (SPACeR, HR-PPO); dashed bars are demonstration-based references (the logged Expert Demonstration and, on 2024, CAT-K). Left: the 2023 edition on the full Waymo validation split, against Gigaflow. Right: the 2024 edition on vehicles (shared 880-scenario subset). TerraZero uses no demonstrations and no reference policy, matching the realism of the demonstration-derived methods.
+
+    
+
+      
+        
+        Watch TerraZero simulate WOSAC scenarios
+        
+      
+      
+
+        
+
+        
+
+      
+    
+  
+
+  
+
+    
+Terra Series
+    
+Part of the Terra Series
+    
+
+    
+Browse the Terra Series

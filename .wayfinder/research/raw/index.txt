@@ -1,0 +1,49 @@
+Terra — Scaled Simulation, Minimal Demonstration | Applied Intuition
+
+  
+
+    
+      Terra Series
+    
+    
+      
+    
+    
+      TerraZero
+      TerraTransfer
+      TerraTransfer++
+      SPACeR
+      Research ↗
+    
+  
+
+  
+
+    
+
+      
+Applied Intuition · Research
+      
+Scaled Simulation, Minimal Demonstration
+      
+Terra series research created by Applied Intuition aims at pushing the boundary of physical AI learned in closed loop with minimal human demonstration. Terra series exploits high-throughput, reactive simulation at scale together with efficient closed-loop reinforcement learning to bring the generalizability and robustness of physical AI to the next level.
+    
+
+    
+
+  
+
+Enable JavaScript to browse the Terra Series.
+
+  
+
+    
+Join Us
+    
+Building physical AI that moves the world.
+    
+The Terra Series is developed by the research team at Applied Intuition. We are hiring researchers and engineers to push autonomy from simulation into the real world.
+    
+
+      Careers at Applied Intuition
+      Research

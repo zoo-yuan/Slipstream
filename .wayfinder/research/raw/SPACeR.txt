@@ -1,0 +1,934 @@
+SPACeR: Self-Play Anchoring with Centralized Reference Models
+
+  
+  
+  
+
+  
+  
+  
+
+  
+  
+  
+  
+
+  
+  
+
+  
+
+  
+  
+    
+
+      
+        SPACeR
+      
+      
+        
+      
+      
+        Abstract
+        Demo
+        Method
+        Results
+        Comparisons
+        Terra Series
+        Research ↗
+      
+    
+  
+
+  
+
+    
+    
+      
+
+        
+
+          
+Applied Intuition · ICLR 2026
+          
+
+            SPACeR: Self-Play
+            Anchoring with Centralized
+            Reference Models
+          
+
+          
+
+            
+
+              
+                Wei-Jer Chang1,2*,
+                Akshay Rangesh1,
+                Kevin Joseph1,3*,
+                Matthew Strong1,4*,
+                Masayoshi Tomizuka2,
+                Yihan Hu1,
+                Wei Zhan1,2
+              
+            
+            
+
+              1 Applied Intuition  · 
+              2 University of California, Berkeley  · 
+              3 New York University  · 
+              4 Stanford University
+
+              * Work done during internship at Applied Intuition
+            
+
+            
+
+              arXiv
+              Paper
+              Blog
+            
+          
+        
+      
+    
+
+    
+    
+      
+
+        
+Abstract
+        
+
+          Developing autonomous vehicles (AVs) requires not only safety and efficiency, but also realistic,
+          human-like behaviors that are socially aware and predictable. Achieving this requires sim agent policies
+          that are human-like, fast, and scalable in multi-agent settings. Recent progress in imitation learning with
+          large diffusion-based or tokenized models has shown that behaviors can be captured directly from human
+          driving data, producing realistic policies. However, these models are computationally expensive, slow during
+          inference, and struggle to adapt in reactive, closed-loop scenarios. In contrast, self-play reinforcement
+          learning (RL) scales efficiently and naturally captures multi-agent interactions, but it often relies on
+          heuristics and reward shaping, and the resulting policies can diverge from human norms. We propose human-like
+          self-play, a framework that leverages a pretrained tokenized autoregressive motion model as a centralized
+          reference policy to guide decentralized self-play. The reference model provides likelihood rewards and KL
+          divergence, anchoring policies to the human driving distribution while preserving RL scalability. Evaluated on
+          the Waymo Sim Agents Challenge, our method achieves competitive performance with imitation-learned policies
+          while being up to 10× faster at inference and 50× smaller in parameter size than large generative models. In
+          addition, we demonstrate in closed-loop ego planning evaluation tasks that our sim agents can effectively
+          measure planner quality with fast and scalable traffic simulation, establishing a new paradigm for testing
+          autonomous driving policies.
+        
+      
+    
+
+    
+    
+      
+
+        
+Demo
+        
+SPACeR in Action
+        
+
+          SPACeR policies drive smoothly and human-like across diverse traffic scenarios, reacting to surrounding
+          agents in closed-loop simulation.
+        
+        
+          
+
+            
+              
+            
+          
+          Demo. SPACeR sim agents navigating a generic driving scenario in
+            closed-loop simulation.
+        
+      
+    
+
+    
+    
+      
+
+        
+Overview
+        
+Overview of SPACeR
+        
+Existing approaches face a fundamental trade-off:
+        
+          
+Imitation learning (IL): Realistic and human-like, but tokenized or diffusion models are
+            large (GPU memory heavy), slow, and difficult to scale.
+          
+          
+Self-play reinforcement learning (RL): Efficient and scalable, but requires reward shaping
+            and often diverges from human norms.
+        
+        
+
+          SPACeR is an RL-first approach designed to bridge these gaps—combining the scalability of
+          self-play with the realism of IL. Our policies are ~50× smaller than tokenized models and run
+          10× faster (or more!), enabling lightweight, human-like multi-agent simulation.
+        
+
+        
+
+          
+
+~50×
+smaller than tokenized models
+          
+
+10×
+faster inference (or more)
+          
+
+65K
+policy parameters
+        
+
+        
+
+          We propose to anchor self-play reinforcement learning to a pretrained tokenized reference model, which
+          provides a human-likeness distributional signal. The resulting SPACeR policy is decentralized and
+          conditioned only on local observations, while the reference model is centralized and conditioned on the
+          full scene context—allowing scalable training without sacrificing realism.
+        
+
+        
+          
+
+            
+          
+          Figure 1. SPACeR anchors decentralized self-play RL to a
+            centralized pretrained tokenized reference model, combining the scalability of self-play with the realism of
+            imitation learning.
+        
+      
+    
+
+    
+    
+      
+
+        
+Method
+        
+Human-like Self-Play
+        
+
+          Formally, we augment self-play reinforcement learning with a pretrained reference policy \(\pi_{\text{ref}}\)
+          that captures the human driving distribution and provides a realism signal during training. The overall
+          objective is
+        
+
+        
+
+          \[
+          r_t = r_t^{\text{task}} + \alpha \, r_{\text{humanlike}}(s_t, a_t), \quad
+          L(\theta) = L_{\text{PPO}}(\theta; A[r]) - \beta \, D_{\text{KL}}\!\left(\pi_\theta(\cdot \mid o_t)
+          \,\|\, \pi_{\text{ref}}(\cdot \mid s_t)\right),
+          \]
+        
+
+        
+
+          where (1) \(L_{\text{PPO}}\) optimizes task performance (goal-reaching, collision avoidance, off-road
+          avoidance), (2) the human-likeness reward \(r_{\text{humanlike}}(s_t, a_t) = \log \pi_{\text{ref}}(a_t \mid
+          s_t)\) provides dense per-timestep likelihood feedback, and (3) the distributional alignment term
+          enforces KL-regularization between the reference and learned policies. This formulation ensures agents learn
+          from experience in a closed-loop manner while also remaining closely aligned with realistic human driving
+          behaviors.
+        
+      
+    
+
+    
+    
+      
+
+        
+Reference Model
+        
+Pretrained Reference Tokenized Model
+        
+
+          To incorporate human-likeness into self-play, we introduce a pretrained reference tokenized model
+          (\(\pi_{\text{ref}}\)), trained on real-world driving trajectories as a proxy for the human driving
+          distribution. Tokenized models (e.g., SMART) factorize the joint action distribution under a conditional independence
+          assumption:
+        
+
+        
+
+          $$ p(a_t \mid a_{<t}, c) = \prod_{i=1}^{N} p(a_t^i \mid a_{<t}, c). $$
+        
+
+        
+
+          This yields per-agent (i) distributions at each timestep (t). Unlike autoregressive generation, our approach
+          only requires tractable training a single forward pass per rollout. By aligning the action space of
+          \(\pi_\theta\) and \(\pi_{\text{ref}}\), we obtain a direct distributional signal that guides scalable
+          self-play toward human-like behavior.
+        
+      
+    
+
+    
+    
+      
+
+        
+Results
+        
+Experimental Results on Waymo Sim Agent Challenge
+        
+
+          We measure whether SPACeR self-play policies are human-like by adopting the Waymo Sim Agents Challenge
+          (WOSAC). We compare SPACeR against two self-play RL baselines:
+        
+        
+          
+PPO: Only using task reward (goal reaching, collision avoidance, off-road avoidance)
+          
+HR-PPO:
+            Previous works that use Behavior Cloning as KL-regularization
+          
+SMART*: State of
+            the art tokenized traffic models
+          
+CAT-K*: Supervised
+            Fine-tuning on top of SMART
+        
+        
+
+          SPACeR outperforms other self-play approaches significantly across all realism metrics. In addition, compared
+          to imitation-learning methods, SPACeR is lightweight (65k params, 50x smaller than SMART 3M) and achieves ~10×
+          throughput while maintaining competitive performance.
+        
+        
+
+          *Note: We retrain SMART and CAT-K with the same token size of 200 at 5Hz, where CAT-K is used as a reference
+          model.
+        
+
+        
+
+          
+            
+              Table 1. Throughput = scenarios/sec @ 5Hz on a single A100 GPU, each
+              scenario is 8 seconds. IL = imitation learning methods (shaded).
+            
+            
+              
+
+                Method
+                Composite ↑
+                Kinematic ↑
+                Interactive ↑
+                Map ↑
+                minADE ↓
+                Collision ↓
+                Off-road ↓
+                Throughput ↑
+              
+            
+            
+              
+
+                PPO
+                0.7100.3270.7510.87512.7250.0380.053211.8
+              
+              
+
+                HR-PPO
+                0.7160.3410.7560.88012.2540.0440.053211.8
+              
+              
+
+                SPACeR (Ours)
+                0.7410.4110.7790.8804.1010.0360.056211.8
+              
+              
+Imitation Learning
+              
+
+                SMART* (IL)
+                0.7200.4500.7250.8701.8400.1700.13022.5
+              
+              
+
+                CAT-K* (IL)
+                0.7660.4900.7920.8901.4700.0600.09022.5
+              
+            
+          
+        
+      
+    
+
+    
+    
+      
+
+        
+Comparisons
+        
+Qualitative Comparison with Self-Play Baseline
+        
+
+          Qualitatively, PPO and HR-PPO usually have stop-and-go behavior, while SPACeR maintains a smooth driving
+          behavior. The colored agents are targeted agents from the Waymo Sim Agents Challenge, and all agents are
+          controlled by the self-play model.
+        
+
+        
+        
+PPO exhibits jerky stop-and-go behavior, while SPACeR demonstrates smoother, more natural
+          motion.
+        
+
+          
+
+            
+
+              
+
+                
+                  
+                
+              
+              
+PPO
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+HR-PPO
+            
+            
+
+              
+
+                
+
+                  Targeted Agent
+                  Other Agents
+                
+                
+                  
+                
+              
+              
+SPACeR
+            
+          
+        
+
+        
+
+        
+        
+PPO and HR-PPO agents goes to the wrong direction and stop immediately, while SPACeR agents
+          produce traffic compliant behavior.
+        
+
+          
+
+            
+
+              
+
+                
+                  
+                
+              
+              
+PPO
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+HR-PPO
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+SPACeR
+            
+          
+        
+
+        
+
+        
+        
+On Highway scenarios, all agents drive at a higher speed with lane-changing behavior, SPACeR
+          agents are smoother and natural without stop-and-go behavior.
+        
+
+          
+
+            
+
+              
+
+                
+                  
+                
+              
+              
+PPO
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+HR-PPO
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+SPACeR
+            
+          
+        
+
+        
+
+        
+        
+In intersection yielding (A2 → A3), HR-PPO yields abruptly near collision, while SPACeR
+          yields smoothly in advance.
+        
+
+          
+
+            
+
+              
+
+                
+                  
+                
+              
+              
+PPO
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+HR-PPO
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+SPACeR
+            
+          
+        
+      
+    
+
+    
+    
+
+    
+    
+      
+
+        
+Planner Evaluation
+        
+Closed-loop Planner Evaluation
+        
+
+          We evaluate SPACeR by comparing how planners perform under different sim agent policies. Specifically, we test
+          22 self-play–trained policies, 10 sampling-based Frenet planners, and 10 IDM-based planners. For each planner,
+          we compute PDM scores across diverse scenes under three simulation modes: ground-truth log replay, Cat-K
+          rollouts, and SPACeR agent policies. We then measure the correlation of PDM scores across sim agent
+          strategies to understand how similarly different agents assess planner behaviors.
+        
+
+        
+          
+
+            
+          
+          Figure 2. Correlation of PDM scores across sim-agent strategies
+            (log-replay, CAT-K, and SPACeR) over the evaluated planners.
+        
+
+        
+
+          The correlation of collision scores is low between SPACeR against Log-Replay and CAT-K. Qualitatively, both
+          Log-Replay and CAT-K yield more false positive collisions, giving a wrong estimate of the planner's safety
+          performance. In contrast, SPACeR agents provide more reactive, realistic behavior that better reflects
+          real-world driving scenarios.
+        
+
+        
+
+          Playback Speed
+          
+
+            
+            0.5×
+            1×
+            2×
+            4×
+          
+        
+
+        
+        
+When the ego changes lanes, Log-Replay and CAT-K agents ignore the ego and collide
+          (collision score = 0), while SPACeR slows down to avoid collision, leading to a more accurate PDM score.
+        
+
+          
+
+            
+
+              
+
+                
+                  
+                
+              
+              
+Log-Replay
+              
+PDM Score 0.38
+Collision Score 0.0
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+CAT-K
+              
+PDM Score 0.38
+Collision Score 0.0
+            
+            
+
+              
+
+                
+
+                  Ego Policy
+                  Sim Agent
+                
+                
+                  
+                
+              
+              
+SPACeR
+              
+PDM Score 0.7
+Collision Score 1.0
+            
+          
+        
+
+        
+
+        
+        
+CAT-K agents drive faster than ego and cause back collision, while SPACeR maintains a safe
+          distance with smoother motion.
+        
+
+          
+
+            
+
+              
+
+                
+                  
+                
+              
+              
+Log-Replay
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+CAT-K
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+SPACeR
+            
+          
+        
+
+        
+
+        
+        
+CAT-K agents aggressive merge to ego lanes, causing collision.
+        
+
+          
+
+            
+
+              
+
+                
+                  
+                
+              
+              
+Log-Replay
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+CAT-K
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+SPACeR
+            
+          
+        
+
+        
+
+        
+        
+Negotiation scenario: All agents collide, but SPACeR shows reactive behavior, slowing down
+          when the ego enters the wrong lane and helping it learn the correct signals for how and when to avoid
+          collisions
+        
+
+          
+
+            
+
+              
+
+                
+                  
+                
+              
+              
+Log-Replay
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+CAT-K
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+SPACeR
+            
+          
+        
+
+        
+
+        
+        
+T-intersection: Both Log-Replay and CAT-K agents doesn't react to the ego and cause back
+          collision.
+        
+
+          
+
+            
+
+              
+
+                
+                  
+                
+              
+              
+Log-Replay
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+CAT-K
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+SPACeR
+            
+          
+        
+
+        
+
+        
+        
+At a 4-way intersection, CAT-K moves too early and causes a front-end collision, while SPACeR
+          yields safely.
+        
+
+          
+
+            
+
+              
+
+                
+                  
+                
+              
+              
+Log-Replay
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+CAT-K
+            
+            
+
+              
+
+                
+                  
+                
+              
+              
+SPACeR
+            
+          
+        
+
+        
+
+          In summary, although CAT-K agents achieve higher distributional realism on the Sim Agents Challenge, we
+          observe that in closed-loop planner evaluation, self-play–trained agents exhibit more reactive and adaptive
+          behaviors, especially in collision and negotiation scenarios. This likely explains why CAT-K and the
+          non-reactive Log-Replay agents show higher correlation in collision scores.
+        
+      
+    
+
+    
+    
+      
+
+        
+Terra Series
+        
+Part of the Terra Series
+        
+
+        
+Browse the Terra Series

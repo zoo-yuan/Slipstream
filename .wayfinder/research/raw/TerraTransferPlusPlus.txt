@@ -1,0 +1,819 @@
+TerraTransfer++: Demonstration-Free End-to-End Planner
+
+  
+
+    
+      TerraTransfer++
+    
+    
+      
+    
+    
+      Philosophy
+      Method
+      Results
+      Demo
+      Terra Series
+      Research ↗
+    
+  
+
+  
+
+    
+
+      
+Applied Intuition · Technical Report
+      
+TerraTransfer++:
+Demonstration-Free End-to-End Planner
+      
+Learn to drive by self-play in a vectorized simulator, learn to plan by trajectory distillation from a flow-matching teacher, then learn to see by aligning a vision student to either frozen teacher — no human demonstrations at any stage.
+
+      
+
+        
+
+          
+            Zikang Xiong1,
+            Weixin Li1,
+            Zhouchonghao Wu1,
+            Akshay Rangesh1,
+            Saarth Bonde1,
+            Grantland Hall1,
+            Chen Tang2,
+            Yihan Hu1,
+            Wei Zhan1,3
+          
+        
+        
+1 Applied Intuition  ·  2 UCLA  ·  3 UC Berkeley
+
+        
+
+          arXiv
+        
+      
+    
+
+    
+    
+
+      
+
+        
+        
+        
+      
+      
+
+        
+
+          
+Terra Series Origin
+          
+TerraZero
+          
+Learn to drive in self-play
+        
+        
+        
+
+          
+          
+
+            
+              
+Fast, feature-rich driving simulation via self-play
+              
+2.8M steps/s on an 8× server node
+              
+State‑of‑the‑art driving performance (94.19 on nuPlan val14, 70.87 on InterPlan)
+            
+          
+        
+      
+      
+
+        
+
+          
+Jun 2026
+          
+TerraTransfer
+          
+Transfer TerraZero to E2E driving by learning to see
+        
+        
+        
+
+          
+          
+
+            
+              
+First of its kind: brings a self-play policy into E2E driving by learning to see via image-to-vector encoder alignment
+              
+Driving policies learnt from 224M miles / 2,535 years of experience in self-play
+              
+State-of-the-art closed-loop E2E driving performance (0.490 HD‑Score on HUGSim)
+            
+          
+        
+      
+      
+
+        
+
+          
+Oct 2026 · This work
+          
+TerraTransfer++
+          
+Learn to plan in long horizon for TerraTransfer
+        
+        
+        
+
+          
+          
+
+            
+              
+Planning capability distilled from self-play rollout experience
+              
+State‑of‑the‑art open-loop and closed-loop E2E driving performance (59.4 EPDMS on navhard, 95.5 PDMS on navtest, 0.548 HD‑Score on HUGSim)
+            
+          
+        
+      
+    
+  
+
+  
+
+    
+
+      
+        
+        Your browser does not support the video tag.
+      
+    
+
+    
+
+      
+Philosophy
+      
+Decouple learning to drive and plan
+from learning to see
+      
+Master driving first by self-play in a fast vectorized simulator, turn its rollouts into a trajectory planner — then let the agent see, by aligning a vision frontend to the skills it already has.
+    
+
+    
+
+      
+0human demonstrations, at any stage
+      
+#01ranking on NAVSIM navtest, navhard, and HUGSim
+      
+801 Bsimulated steps in self-play
+    
+
+    
+      Full abstract
+      
+
+        End-to-end autonomous driving has achieved state-of-the-art performance on benchmarks and
+        real-world deployments. Its standard training recipe, however, is expensive across all
+        existing paradigms: imitation learning requires fleet-scale driving logs whose behavior
+        distribution only thinly covers the safety-critical tail; closed-loop reinforcement learning
+        in a photorealistic simulator, while offering diverse behaviors, is bottlenecked by
+        sample-efficiency, per-step cost of rendering, and a forward pass through a large vision
+        backbone. Self-play in vectorized simulators changes the economics: at millions of rollout
+        steps per second, one can obtain a state distribution with natural diversity in collisions,
+        near-misses, and recoveries that no driving log contains, and a highly reactive policy
+        emerges from a basic driving-quality reward.
+        Our approach exploits this asymmetry by decoupling learning to drive and
+        learning to plan from learning to see. We pretrain a single policy by
+        self-play, distill its rollouts into a flow-matching trajectory teacher that also plans, and
+        train lightweight adapters on a frozen pretrained vision backbone to reproduce the latent
+        space of either teacher through the action Kullback-Leibler divergence, a batch-relational
+        low-rank structural loss, and, for the planner, a trajectory-matching loss. Every target
+        traces back to the self-play policy, so alignment never supervises against a logged
+        trajectory: a paired dataset of (image, scene-state) frames suffices, with no need for the
+        curated expert demonstrations that imitation pretraining is built on. From this one
+        self-play teacher we obtain two end-to-end students: a closed-loop policy that outperforms
+        every published imitation-based end-to-end method on the photorealistic 3D Gaussian
+        splatting closed-loop benchmark HUGSim, and a planner that reaches 59.4 EPDMS on NAVSIM
+        navhard, outperforming every published method including DriveZero-Scale (57.1), and
+        95.5 PDMS on navtest, without human demonstrations.
+      
+    
+  
+
+  
+
+    
+Method · Phase 1
+    
+Learn to drive — by self-play
+    
+One shared policy controls every agent in TerraZero, our vectorized simulator. Each agent observes its ego state, nearby road polylines and traffic controls, and neighboring agents. Trained with PPO, it learns from the long tail of its own behavior — collisions, near-misses, recoveries — never imitating a human.
+
+    
+
+      
+
+      
+        
+          
+          
+        
+
+        
+        
+        
+        
+        
+        
+
+        
+        Ego encoderMLP
+        Road encoderDeepSets
+        Partner encoderDeepSets
+
+        
+        
+        
+        
+
+        Shared MLPtrunk
+        
+        Action Headπ(a|state)
+
+        
+        
+        PPO · actions fed back → interaction distribution co-evolves
+      
+      
+      
+
+        
+
+          
+          
+          
+          
+        
+        
+TerraZero · massively-parallel self-play224M miles
+      
+      
+    
+
+    
+
+      
+0human demonstrations
+      
+#1ranking on val14 and InterPlan
+      
+8.0 ×1011steps in simulation
+      
+224M milesof simulated driving
+      
+469 ×Earth-to-Moon round trips in driving distance
+      
+2,535 yrsof self-play driving experience
+    
+  
+
+  
+
+    
+Method · Phase 2
+    
+Learn to plan — distill self-play rollouts into a trajectory teacher
+    
+The self-play policy is frozen and its rollouts become a trajectory dataset: for every frame, the target is the policy’s own realized 8 s future, never a logged human trajectory. A flow-matching trajectory teacher learns these futures and actions from the same vector state, giving the self-play teacher a planning interface.
+
+    
+      
+    
+
+    
+
+      
+0logged trajectories
+      
+#01ranking on NAVSIM navhard and navtest
+      
+1 hof rollouts on 64 A100 GPUs
+    
+  
+
+  
+
+    
+Method · Phase 3
+    
+Learn to see — align a vision student to either frozen teacher
+    
+A frozen DINOv3 backbone with trained adapters maps camera images into the teacher’s scene features, while the teacher’s heads are copied and frozen. Three losses tie student to teacher on paired (image, scene-state) frames: a feature alignment loss, an action KL loss, and, for the planner, a trajectory-matching loss. The self-play teacher yields the closed-loop student; the trajectory teacher yields the planning student. No logged trajectory is ever a target.
+
+    
+      
+    
+
+    
+
+      
+0online rendering
+      
+#01ranking on HUGSim
+      
+10 hof alignment on 8 A100 GPUs
+    
+  
+
+  
+
+    
+Results · HUGSim
+    
+Outperforms every published end-to-end baseline in closed loop
+    
+Closed-loop and native HD-Score on HUGSim — all 436 photorealistic 3D-Gaussian-splatting scenarios across four dataset splits (nuScenes 88, PandaSet 127, KITTI-360 113, Waymo 108), pooled over all scenarios.
+
+    
+
+    
+
+      
+Closed-loop HD-Score
+      
+VAD0.187
+      
+UniAD0.244
+      
+LTF0.266
+      
+ECO0.428
+      
+TerraTransfer++ (ours)0.548
+      
+Self-play teacher (privileged state)0.562
+    
+    
+
+      
+Native HD-Score
+      
+VAD0.183
+      
+UniAD0.247
+      
+LTF0.274
+      
+ECO0.344
+      
+TerraTransfer++ (ours)0.528
+      
+Self-play teacher (privileged state)0.542
+    
+    
+
+      
+Native HD-Score (earlier 345-scenario protocol*)
+      
+GigaPixel0.385
+      
+DriveZero0.466
+      
+TerraTransfer++ (ours)0.518
+    
+*GigaPixel and DriveZero report only the pre-challenge 345-scenario protocol and their checkpoints are not public, so we re-evaluate ours on the same 345 scenarios with HUGSim’s native scorer.
+    
+    
+    
+
+    
+
+      The student retains roughly 97.5% of its privileged teacher’s closed-loop score and leads
+      every baseline on the Easy, Medium, and Hard tiers and the All aggregate of every split. The exception is the
+      Extreme tier, whose partly implausible adversarial scenarios reward never reacting; like its
+      teacher, the student yields as a human driver would and sacrifices route completion.
+    
+
+    
+      Full per-split table (closed-loop and native HD-Score)
+      
+
+        
+          
+            
+Closed-loop HD-ScoreNative HD-Score
+            
+
+              MethodEasyMediumHardExtremeAllEasyMediumHardExtremeAll
+            
+          
+          
+            
+nuScenes (88)
+            
+UniAD0.4230.2310.2860.1220.2590.4120.2340.2900.1290.260
+            
+VAD0.4430.2560.2700.1080.2670.4240.2460.2570.1130.257
+            
+LTF0.7080.4400.3260.1110.4040.7020.4400.3310.1240.407
+            
+ECO0.7640.4160.4050.2550.4520.8460.4310.4030.2630.476
+            
+Self-play teacher (ref., privileged state)0.9060.6840.6850.2790.6470.8750.6570.6530.2500.618
+            
+TerraTransfer++ student (ours)0.9010.6820.6410.2780.6360.8840.6500.6200.2510.610
+            
+PandaSet (127)
+            
+UniAD0.5770.3800.2350.1250.2950.5760.3840.2420.1350.301
+            
+VAD0.4770.3050.1920.1080.2410.4670.3030.1910.1130.241
+            
+LTF0.8820.3760.2080.0850.3110.8770.3860.2190.0970.323
+            
+ECO0.8840.6390.1740.2470.4460.8760.4700.0440.1560.326
+            
+Self-play teacher (ref., privileged state)0.8900.8830.3020.2240.5540.8760.8720.2750.1860.532
+            
+TerraTransfer++ student (ours)0.8920.8710.3530.2340.5650.8820.8550.3240.1890.539
+            
+KITTI-360 (113)
+            
+UniAD0.2310.1010.0790.0240.1060.2320.1070.0820.0280.110
+            
+VAD0.0840.0680.0750.0260.0630.0790.0630.0710.0290.061
+            
+LTF0.1750.0710.0660.0260.0820.1810.0760.0750.0330.088
+            
+ECO0.5300.4320.1260.1080.3100.5010.2820.0190.0080.205
+            
+Self-play teacher (ref., privileged state)0.6590.4970.2440.0190.3630.6500.4880.2050.0150.348
+            
+TerraTransfer++ student (ours)0.5500.4570.2190.0170.3210.5350.4500.1950.0140.309
+            
+Waymo (108)
+            
+UniAD0.5910.2750.3340.0950.3150.5850.2780.3400.1010.317
+            
+VAD0.2370.1970.2080.1090.1890.2260.1890.1990.1140.183
+            
+LTF0.5200.3120.2180.1000.2920.5300.3250.2250.1110.303
+            
+ECO0.8010.5810.3390.2540.5100.7570.4630.2130.1240.403
+            
+Self-play teacher (ref., privileged state)0.9240.8540.8170.1150.7100.9120.8470.7770.1020.694
+            
+TerraTransfer++ student (ours)0.9410.8360.7580.1160.6950.9360.8270.7170.1000.679
+          
+          Closed-loop and native HD-Score across all four HUGSim splits (higher is better). Both blocks score the same re-run rollouts; UniAD, VAD, and LTF are re-run from their released checkpoints, and ECO uses its released checkpoint. The student emits a single jerk action per step and is scored natively with a decel stand-in plan. Bold marks the best comparison entry per column within each split; the self-play teacher drives from privileged vectorized state and is excluded.
+        
+      
+    
+  
+
+  
+
+    
+Results · NAVSIM
+    
+A camera-only planner outperforming every published method
+    
+PDMS on NAVSIMv1 navtest and two-stage EPDMS on NAVSIMv2 navhard. The trajectory student plans a 4 s trajectory from cameras and ego state, with no human trajectory supervision.
+
+    
+
+    
+
+      
+navtest · PDMS (axis starts at 80)
+      
+Privileged reference (ground-truth scene state)
+      
+Human driver94.8
+      
+PDM-Closed89.1
+      
+DriveRL (DriveZero teacher)95.8
+      
+Trajectory teacher (ours)95.9
+      
+Sensor input, human demonstrations
+      
+UniAD83.4
+      
+TransFuser84.0
+      
+VADv286.2
+      
+DiffusionDrive88.1
+      
+ReCogDrive (VLA)90.8
+      
+Hydra-MDP++91.0
+      
+Centaur92.6
+      
+DriveSuprim (camera + LiDAR)93.5
+      
+DrivoR-Scale94.6
+      
+Camera input, no human demonstrations
+      
+DriveZero94.8
+      
+DriveZero-Scale95.3
+      
+TerraTransfer++ (ours)95.5
+    
+    
+
+      
+navhard · two-stage EPDMS
+      
+Privileged reference (ground-truth scene state)
+      
+PDM-Closed56.6
+      
+DriveRL (DriveZero teacher)55.6
+      
+Trajectory teacher (ours)62.1
+      
+Trajectory teacher (ours, IDM selection)65.6
+      
+Camera input, human demonstrations
+      
+LTF25.1
+      
+NavFormer34.1
+      
+RAP39.6
+      
+GuideFlow51.5
+      
+SimScale53.2
+      
+DrivoR-Scale54.6
+      
+Camera input, no human demonstrations
+      
+ZTRS48.1
+      
+GigaPixel50.1
+      
+DriveZero51.5
+      
+DriveZero-Scale57.1
+      
+TerraTransfer++ (ours)59.4
+    
+    
+    
+Hatched bars read privileged ground-truth scene state at test time.
+
+    
+
+      On navhard the student reaches 59.4 EPDMS, 2.3 points above DriveZero-Scale (57.1) and
+      2.7 below its privileged, selection-based trajectory teacher (62.1). On navtest it reaches
+      95.5 PDMS, outperforming every sensor-based entry including DriveZero-Scale (95.3).
+    
+
+    
+      Full NAVSIM table
+      
+
+        
+          
+            
+navtestnavhard
+            
+MethodDemoPriv.PDMSStage 1Stage 2EPDMS
+          
+          
+            
+Privileged reference (ground-truth scene state)
+            
+Human driver––94.8–––
+            
+PDM-Closed✓✓89.1––56.6
+            
+DriveRL (DriveZero teacher)✗✓95.884.165.455.6
+            
+TerraTransfer++ trajectory teacher (ours)✗✓95.992.267.562.1
+            
+TerraTransfer++ trajectory teacher (ours, IDM selection)✗✓95.994.669.565.6
+            
+Camera & LiDAR input, human demonstrations
+            
+TransFuser✓✗84.0–––
+            
+DRAMA✓✗85.5–––
+            
+VADv2✓✗86.2–––
+            
+DiffusionDrive✓✗88.1–––
+            
+Hydra-MDP++✓✗91.0–––
+            
+Centaur✓✗92.6–––
+            
+DriveSuprim✓✗93.5–––
+            
+Camera input, human demonstrations
+            
+UniAD✓✗83.4–––
+            
+PARA-Drive✓✗84.0–––
+            
+Epona✓✗86.2–––
+            
+OneVL✓✗88.4–––
+            
+DriveLaW✓✗89.1–––
+            
+AutoVLA✓✗89.1–––
+            
+DriveVLA-W0✓✗90.2–––
+            
+Qwen-Drive-1.0✓✗90.7–––
+            
+ReCogDrive✓✗90.8–––
+            
+R2SE✓✗91.6–––
+            
+iPad✓✗91.7–––
+            
+DriveFine✓✗91.8–––
+            
+LTF✓✗–––25.1
+            
+NavFormer✓✗–––34.1
+            
+RAP✓✗–––39.6
+            
+GuideFlow✓✗–––51.5
+            
+SimScale✓✗–––53.2
+            
+DrivoR-Scale✓✗94.6––54.6
+            
+Camera input, no human demonstrations
+            
+ZTRS✗✗–––48.1
+            
+GigaPixel✗✗–77.863.550.1
+            
+DriveZero✗✗94.884.160.851.5
+            
+DriveZero-Scale✗✗95.382.369.157.1
+            
+TerraTransfer++ trajectory student (ours)✗✗95.589.166.559.4
+          
+          Pseudo closed-loop planning on NAVSIM (higher is better). navtest reports PDMS (NAVSIMv1); navhard reports per-stage scores and the two-stage EPDMS (NAVSIMv2). Baseline rows are the published results compiled by DriveZero; – marks a score that compilation does not list. Demo: human trajectory demonstrations used as training supervision. Priv.: reads privileged ground-truth scene state at test time. Italic rows are privileged references. Both teacher rows keep the best of 16 sampled plans; the student scores a single sampled plan with no selection. Bold marks the best score in each group.
+        
+      
+    
+  
+
+  
+
+    
+Plan Visualization
+    
+What the camera-only planner plans
+    
+Plans of the camera-only trajectory student on NAVSIM, 16 scenes per panel. The planned trajectory is drawn in blue on the front camera, with a bird’s-eye view inset.
+    
+
+      
+navtest
+      
+
+        
+          
+
+        
+      
+    
+    
+
+      
+navhard · Stage 1
+      
+
+        
+          
+
+        
+      
+    
+    
+
+      
+navhard · Stage 2
+      
+
+        
+          
+
+        
+      
+    
+  
+
+  
+
+    
+Qualitative Rollouts
+    
+Naturalistic driving across the long tail
+    
+Closed-loop HUGSim rollouts of the camera-only TerraTransfer++ student, two scenarios per dataset, shown through the three front cameras.
+    
+
+      
+nuScenes
+      
+
+        
+          
+
+        
+        
+          
+
+        
+      
+    
+    
+
+      
+PandaSet
+      
+
+        
+          
+
+        
+        
+          
+
+        
+      
+    
+    
+
+      
+KITTI-360
+      
+
+        
+          
+
+        
+        
+          
+
+        
+      
+    
+    
+
+      
+Waymo Open Dataset
+      
+
+        
+          
+
+        
+        
+          
+
+        
+      
+    
+  
+
+  
+
+    
+Terra Series
+    
+Part of the Terra Series
+    
+
+    
+Browse the Terra Series

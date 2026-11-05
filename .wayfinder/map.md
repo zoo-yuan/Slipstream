@@ -21,11 +21,12 @@
 - [基底裁决：复用 PufferDrive 3.0 家族还是别路，Slipstream 如何承接](tickets/01-基底裁决-复用PufferDrive还是别路.md)：Slipstream 为主仓；基线 = `3.0` 干净上游，**保留历史**导入；`9_bernhard_dev` 为挖矿源（噪声/权重按需 cherry-pick）；Nova bridge WIP 留 PufferDrive 仓。执行见「基线导入执行」票。
 - [复刻范围与验收口径：能力矩阵、验收标准、算力包线](tickets/05-复刻范围与验收口径.md)：能力包 = 场景生成层 + 零演示配方 + sim-agent（吞吐出界）；验收 = 内部优先 + 外部榜单为辅；算力 = 单服务器 GPU（1e9–1e10 步）。
 - [基线导入执行：3.0 历史进 Slipstream master + 工程约定初始化](tickets/11-基线导入执行.md)：已执行——拉最新上游后基线 = `3.0@2c1ca3e4`（比 80a681b4 新 6 提交：Longest6v1/Alpasim eval、overspeed reward 调整）；保留全历史；tag `baseline/pufferdrive-3.0-2c1ca3e4`；资产/strata 两提交（a920284、0ebd01d）。
+- [hazard 生成器最小原型](tickets/07-hazard生成器最小原型.md)：M0-M3 全验收——四模式 demo（baseline/static/jaywalker/mix）+ YAML 旋钮 + 32 tests + 回归双门像素级；内核零改动（Python 侧放置/步进）；锚点 200/31/0；内核子系统化入雾区。
 
 ## Not yet specified
 
 - SPACeR 参考锚定与场景生成层的叠加关系——若「训练配方立场」选混合/锚定路线才展开。
-- 场景生成的配置面形态（hazard 概率表 vs 场景模板 DSL vs 交互式编辑器——报告已确认 TerraZero 侧只有配置轴+采样，无编辑器）——等 hazard 原型反馈。
+- **hazard 内核子系统化**（C reset 内生放置/真 PEDESTRIAN type/per-agent IDM 变体）——原型已验证概念与规格锚点（票 07），范围依赖「异质保真档位」与「训练配方立场」裁决后才能切票。
 - 大规模训练稳定性细节（lr/entropy/batch 随步数的调度）——等配方立场落定（算力已定单服务器 GPU）。
 - gigaflow 真值配时保真开关（若验收要求自有 ODD 真实信号配时；小改 drive.h:3009 块）——03 票反方论点，验收已定内部优先，倾向不做，待配方票一并确认。
 - 源→中间几何表示→单一 bin writer 的统一摄取架构（五源共享）——03 票执行者建议，随生成层设计展开。

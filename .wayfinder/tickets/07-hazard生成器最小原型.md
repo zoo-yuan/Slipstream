@@ -2,8 +2,8 @@
 id: "07"
 title: hazard 生成器最小原型：在 gigaflow reset 上放长尾元素
 labels: [wayfinder:prototype]
-status: open
-assignee: zoo + 会话代理（M0 启动 2026-11-03）
+status: closed
+assignee: zoo + 会话代理（2026-11-05 M0-M3 全验收）
 blocked-by: ["01", "02", "11"]
 ---
 ## Question
@@ -49,3 +49,16 @@ blocked-by: ["01", "02", "11"]
 ### 进度记录
 
 - 2026-11-05：M0 ✅、M1 ✅（含两轮渲染修复）、M2 ✅（jaywalker 6/6，减速事件诚实零，cut-in abandoned+替代方案已录）；内核钉死+全量重渲（新锚点：baseline 200/31/0；static 增量 +116.7%/+133.3%/+16.0%）；kernel 溯源块+非本仓拒跑守卫入所有 summary。剩 M3。
+- 2026-11-05（终）：M3 ✅（配置面 hazard_demo.yaml + 32 tests + mix 三 seed + 回归双门像素级全绿 + 既有内核测试 13+1 全绿）。票闭。
+
+## Resolution
+
+已解决（2026-11-05，owner 四里程碑全验收；实现 = worker 子代理 glm-5.3-flash，提交链 d2b09f4→9b65005→df7b8a8→de1b953→534508b→baf5e4f→b5a60c4）：
+
+1. **交付**：`scripts/hazard_demo.py` 四模式（baseline/static-hazards/jaywalker/mix）+ `config/hazard_demo.yaml` 旋钮（init 前 fail-fast 校验）+ `tests/test_hazard_demo.py`（32 passed）。产物在 `artifacts/{baseline,static-hazards,jaywalker,mix}/`，全部带 kernel 溯源块，遵守长期渲染标准（独立图例/类别着色/像素审计/标注）。
+2. **锚点（内核钉死后）**：baseline s42 = 200 步/31 碰撞/0 offroad；static 增量 +116.7%/+133.3%/+16.0%；jaywalker 6/6 横穿、min 1.012m、1 接触（s44）；mix 碰撞 b→m = 12→26/9→26/25→29。
+3. **回归双门像素级**：旋钮全关 → 世界渲染与 baseline 逐字节一致（仅标题条 572px 差）；既有内核测试全绿 → 零内核改动铁证。
+4. **已知偏差（全录 summary notes）**：行人 type=1（内核小车语义）；cut-in abandoned（替代 = per-agent IDM 参数）；贴边锥桶 lane-assoc 失败（无 gameplay 影响，源码已核）；减速事件诚实零。
+5. **设计问题回答**：放置时机 = reset 后 Python 步进；合法性检查 = lane 锚定 + Python 侧 OBB 重叠（内核 checker 无 binding，未加薄封装）；配置面 = YAML 旋钮 + init 校验；观测 = 静态槽自动进 partner obs（recompute_observations）。
+6. **复现**：`PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py --mode {baseline|static-hazards|jaywalker|mix} --seed {42,43,44}`（每 seed ~20-60s）。
+7. **后续出界项**：内核子系统化（C reset 内生放置/真 PEDESTRIAN type/per-agent IDM）→ 已入地图雾区，规格依赖 06/08 裁决。

@@ -14,12 +14,19 @@ captures the global agent state every step, and renders top-down artifacts:
 - cones draw as diamonds with a forced >=12 px diagonal on full maps (zooms
   re-render at true scale); every image that should show cones is pixel-audited
   into ``summary.json`` ``render_audit`` — any zero count fails the run
+- M2 ``jaywalker``: python-stepped 0.5 m pedestrian slots (static co-sim slots
+  overwritten via set_agent_states every step BEFORE env.step) cross the road
+  mid-block; metrics cover crossing completion, min distance to traffic and
+  "obvious slowdown" reactions (same-seed baseline comparison); walker-magenta
+  pixels are audited with the same hard-fail mechanism as cones
 
 Usage:
     PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py \
         --mode baseline --seed 42
     PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py \
         --mode static-hazards --seed 42   # M1: parked/collided-cluster/cones
+    PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py \
+        --mode jaywalker --seed 42        # M2: python-stepped crossing + reactions
 
 Notes (see .wayfinder/research/log-to-map-findings.md):
 - Pure-map bins carry no log agents; gigaflow replaces them with procedurally
@@ -69,11 +76,15 @@ DEFAULT_MAP = "Town05"
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="M0 baseline visualization pipeline")
-    p.add_argument("--mode", choices=["baseline", "static-hazards"], default="baseline",
-                   help="demo mode; mix arrives with M2")
+    p = argparse.ArgumentParser(description="M0/M1/M2 hazard visualization pipeline")
+    p.add_argument("--mode", choices=["baseline", "static-hazards", "jaywalker"], default="baseline",
+                   help="demo mode: baseline / static-hazards (M1) / jaywalker (M2)")
     p.add_argument("--hazard-slots", type=int, default=48,
                    help="static co-sim partner slots reserved for M1 hazards (static-hazards only)")
+    p.add_argument("--walkers", type=int, default=2,
+                   help="jaywalker walkers placed per seed (jaywalker only)")
+    p.add_argument("--skip-cut-in", action="store_true",
+                   help="jaywalker only: do not attempt the scripted cut-in vehicle")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--steps", type=int, default=200, help="episode steps to run")
     p.add_argument("--envs", type=int, default=2, help="parallel sub-environments")
@@ -93,7 +104,7 @@ def parse_args():
     p.add_argument("--gif-window-m", type=float, default=220.0,
                    help="GIF camera window side length in meters")
     p.add_argument("--out", default=None,
-                   help="output directory (default: artifacts/baseline or artifacts/static-hazards by mode)")
+                   help="output directory (default: artifacts/<mode> by mode)")
     return p.parse_args()
 
 
@@ -212,6 +223,7 @@ GIF_COLORS = {
     "stopped": "#8c8c8c",
     "pedestrian": "#2e8b57",
     "cyclist": "#ff8c00",
+    "walker": "#FF00FF",  # M2 jaywalker: magenta dot + trail (never spawned by baseline/static modes)
     "ink": "#222222",
 }
 TRAFFIC_STATE_COLORS = {0: "#8c8c8c", 1: "#ff0000", 2: "#ffee00", 3: "#00cc00", 4: "#8c8c8c"}
@@ -236,14 +248,18 @@ def _polyline(element, key):
 def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements, sdc_row,
                      center, window_m, size_px, dt, seed, map_name,
                      mode_label="baseline", static_indices=None, static_class_of=None,
-                     min_cone_px=CONE_MIN_DIAM_PX):
+                     min_cone_px=CONE_MIN_DIAM_PX, walker_indices=None, walker_trails=None,
+                     walker_min_px=None):
     """Top-down frame; the single renderer for full-map keyframes and GIFs.
 
     Class-based coloring (owner acceptance 2026-11-05 R2): SDC red, vehicles
     blue, latched gray, static slots tinted by ``static_class_of``. Cones draw
     as a diamond marker with diagonal max(min_cone_px, true size); pass
-    min_cone_px=0 for true-scale zoom renders. No in-frame legend box: the HUD
-    ends with a "legend: see legend.png" pointer to the standalone image."""
+    min_cone_px=0 for true-scale zoom renders. Walkers (M2 jaywalker, kernel
+    type still 1) draw as magenta dots with a forced minimum diameter on full
+    maps (walker_min_px=None -> WALKER_MIN_DIAM_PX; 0 -> true scale in zooms)
+    plus their trajectory polyline up to ``step``. No in-frame legend box: the
+    HUD ends with a "legend: see legend.png" pointer to the standalone image."""
     scale = size_px / window_m
     img = Image.new("RGB", (size_px, size_px), GIF_COLORS["background"])
     draw = ImageDraw.Draw(img)
@@ -277,6 +293,14 @@ def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements
         p2 = _world_to_px(sl[3], sl[4], center, scale, size_px)
         draw.line([p1, p2], fill=TRAFFIC_STATE_COLORS.get(state, "#8c8c8c"), width=3)
 
+    # walker trails: magenta polyline up to the current step (trails.png is the
+    # final frame carrying the COMPLETE trajectory per the M2 render contract)
+    for row, pts in (walker_trails or {}).items():
+        seg = pts[:step + 1]
+        if len(seg) >= 2:
+            draw.line([_world_to_px(float(p[0]), float(p[1]), center, scale, size_px)
+                       for p in seg], fill=GIF_COLORS["walker"], width=2)
+
     # agents as oriented rectangles; color by type/controller role
     active = env_active_mask(agent_i32)
     if static_indices:
@@ -284,6 +308,8 @@ def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements
         sel[np.asarray(static_indices, dtype=int)] = True
         active = active | (sel & (agent_i32[:, 2] == 1) & (agent_i32[:, 5] == 0))
     static_set = set(int(i) for i in (static_indices or ()))
+    walker_set = set(int(i) for i in (walker_indices or ()))
+    min_walker_px = WALKER_MIN_DIAM_PX if walker_min_px is None else float(walker_min_px)
     for i in np.flatnonzero(active):
         x, y = float(agent_f32[i, 0]), float(agent_f32[i, 1])
         heading = float(agent_f32[i, 3])
@@ -293,6 +319,13 @@ def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements
         stopped_latched = int(agent_i32[i, 4]) == 1
         is_sdc = i == sdc_row
         cx, cy = _world_to_px(x, y, center, scale, size_px)
+        if i in walker_set:
+            # python-stepped jaywalker (0.5 m slot, kernel type 1): magenta dot,
+            # forced minimum diameter on full maps (sub-meter marker rule)
+            r = max(min_walker_px / 2.0, 0.25 * scale)
+            draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=GIF_COLORS["walker"],
+                         outline=(0, 0, 0))
+            continue
         if atype == AGENT_TYPE_PEDESTRIAN:
             r = max(2, int(0.5 * scale))
             draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=GIF_COLORS["pedestrian"])
@@ -344,6 +377,10 @@ def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements
                   for k in ("parked", "collided", "cone")}
         hud.append(f"hazards: parked={counts['parked']} cluster={counts['collided']} "
                    f"cones={counts['cone']}")
+        nw = sum(1 for v in static_class_of.values() if v == "walker")
+        nc = sum(1 for v in static_class_of.values() if v == "cut_in")
+        if nw or nc:
+            hud.append(f"walkers={nw} cut_in={nc} (python-stepped)")
     hud.append("legend: see legend.png")
     for i, line in enumerate(hud):
         x = size_px - int(draw.textlength(line)) - 10
@@ -916,6 +953,7 @@ HAZARD_CLASS_COLORS = {
     "cone": "#FF8C00",     # orange; GIF cyclist (#ff8c00) never spawns in gigaflow
     "parked": "#0D1F8C",   # deep navy, clearly darker than vehicle steel blue
     "collided": "#8B0000",  # dark red vs SDC #d62728 / latched gray
+    "cut_in": "#7B2FBF",   # M2 jaywalker scripted merge vehicle (purple; distinct from blue/red/gray)
 }
 HAZARD_CLASS_LABELS = {
     "parked": ("parked", "路侧停车"),
@@ -980,12 +1018,20 @@ def legend_entries(mode):
     """Rows for the standalone legend.png. Mirrors render_gif_frame 1:1 (it is
     now the only renderer, so one legend covers full-map PNGs and GIF frames).
     Categories that never spawn are NOT listed: gigaflow spawns type-1
-    vehicles only, so no pedestrian/cyclist rows (M2 re-adds them when those
-    agents actually appear); no goal ring / agent-id rows either (this
+    vehicles only, so the baseline/static legends have no pedestrian/cyclist
+    rows (the M2 jaywalker mode adds its walker row because those agents
+    actually appear there); no goal ring / agent-id rows either (this
     renderer draws neither)."""
     ent = []
     if mode == "static-hazards":
         ent += hazard_legend_entries()
+    if mode == "jaywalker":
+        ent += [
+            {"sw": "traildot", "colors": [GIF_COLORS["walker"]],
+             "en": "walker: python-stepped jaywalker (dot + trail)", "zh": "行人（轨迹线）"},
+            {"sw": "rect", "colors": [HAZARD_CLASS_COLORS["cut_in"]],
+             "en": "cut-in maker: scripted merging vehicle", "zh": "cut-in 车"},
+        ]
     ent += [
         {"sw": "rect", "colors": [GIF_COLORS["vehicle"]], "en": "vehicle (IDM)", "zh": "车辆"},
         {"sw": "rect", "colors": [GIF_COLORS["sdc"]], "en": "SDC (camera target)", "zh": "主车"},
@@ -1023,6 +1069,11 @@ def _draw_swatch(d, entry, x, cy, sw, sh, small_font):
                         fill=c, outline=ink, width=1)
     elif kind == "line":
         d.line([x, cy, x + sw, cy], fill=colors[0], width=max(2, sh // 3))
+    elif kind == "traildot":  # M2 walker: magenta trail line + dot
+        d.line([x, cy, x + sw, cy], fill=colors[0], width=2)
+        r = sh * 0.6
+        dcx = x + sw * 0.75
+        d.ellipse([dcx - r, cy - r, dcx + r, cy + r], fill=colors[0], outline=ink)
     elif kind == "dash":
         for dx in range(0, sw, 7):
             d.line([x + dx, cy, x + dx + 4, cy], fill=colors[0], width=2)
@@ -1080,14 +1131,16 @@ def full_map_world_to_px(map_corners):
 
 def render_full_map(step, agent_f32, agent_i32, road_elements, traffic_elements,
                     sdc_row, map_corners, dt, seed, map_name, mode_label,
-                    static_indices=None, static_class_of=None):
+                    static_indices=None, static_class_of=None,
+                    walker_indices=None, walker_trails=None):
     """Whole-map keyframe from the shared pillow renderer (class coloring,
-    forced >=12 px cone diamonds)."""
+    forced >=12 px cone diamonds, forced >=12 px walker dots)."""
     center, window_m = map_window(map_corners)
     return render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements,
                             sdc_row, center, window_m, FULL_MAP_PX, dt, seed, map_name,
                             mode_label=mode_label, static_indices=static_indices,
-                            static_class_of=static_class_of)
+                            static_class_of=static_class_of, walker_indices=walker_indices,
+                            walker_trails=walker_trails)
 
 
 def render_legend_png(path, mode, cjk_path=None):
@@ -1114,19 +1167,27 @@ def count_color_pixels(png_path, rgb):
     return int(np.sum(np.all(arr == np.asarray(rgb, np.uint8), axis=-1)))
 
 
-def audit_cone_pixels(seed_dir, rel_paths):
-    """Owner acceptance gate: every image that should show cones must contain
-    cone-orange pixels (the forced >=12 px diamonds make a zero count
-    impossible unless the marker regressed). Any zero count fails the run."""
+def audit_pixels(seed_dir, rel_paths, rgb, label):
+    """Owner acceptance gate: every image that should show ``label``-colored
+    elements must contain at least one such pixel (forced minimum marker sizes
+    make a zero count impossible unless the marker regressed). Any zero count
+    fails the run."""
     counts, failed = {}, []
     for rel in rel_paths:
-        n = count_color_pixels(Path(seed_dir) / rel, CONE_RGB)
+        n = count_color_pixels(Path(seed_dir) / rel, rgb)
         counts[str(rel)] = int(n)
         if n == 0:
             failed.append(str(rel))
     if failed:
-        raise RuntimeError(f"cone pixel audit failed — 0 cone-colored px in: {failed}")
+        raise RuntimeError(f"{label} pixel audit failed — 0 {label}-colored px in: {failed}")
     return counts
+
+
+def audit_cone_pixels(seed_dir, rel_paths):
+    """Owner acceptance gate: every image that should show cones must contain
+    cone-orange pixels (the forced >=12 px diamonds make a zero count
+    impossible unless the marker regressed). Any zero count fails the run."""
+    return audit_pixels(seed_dir, rel_paths, CONE_RGB, "cone")
 
 
 def hazards_in_window(placed, center, window_m):
@@ -1634,15 +1695,1066 @@ def write_root_artifacts(root, seed_summaries, cjk_path=None):
     (root / "index.html").write_text(html, encoding="utf-8")
 
 
+# --- M2 jaywalker: python-stepped crossing + reaction metrics (ticket 07) ----
+#
+# Zero-kernel-change behavior hazards. Walkers are 0.5 m co-sim static slots
+# whose pose is OVERWRITTEN via set_agent_states every step BEFORE env.step(),
+# so vehicle decisions use last-step observations while collision/TTC loops see
+# the fresh pose; c_step never moves static slots. Known deviations (contract:
+# must stay in summary notes): the kernel agent type stays 1 (VEHICLE) —
+# observations and collisions treat the walker as a small car — and the
+# setters only reach vec->envs[0], so this mode pins --envs 1.
+WALKER_SIZE_M = 0.5
+WALKER_RGB = (255, 0, 255)              # GIF_COLORS["walker"] = #FF00FF
+WALKER_MIN_DIAM_PX = 12                 # sub-meter hazard marker rule (full maps)
+WALKER_SPEED_RANGE = (1.2, 1.6)         # m/s, drawn per walker from the seed rng
+WALKER_START_STAGGER_STEPS = 12
+WALKER_REACTION_RADIUS_M = 15.0         # "obvious slowdown" scan radius
+WALKER_CROSSWALK_CLEAR_M = 12.0         # mid-block criterion (no junction elems in bin)
+WALKER_EDGE_SEARCH_M = 25.0
+WALKER_MIN_EDGE_M = 1.0                 # corridor sanity: road narrow/wide bounds
+WALKER_MAX_EDGE_M = 15.0
+WALKER_START_OUT_M = 1.2                # start this far OUTSIDE the near road edge
+WALKER_START_MAX_OUT_M = 5.0
+WALKER_SPACING_M = 15.0
+SLOWDOWN_REF_FLOOR_MPS = 2.0
+SLOWDOWN_DROP_FRAC = 0.5
+SLOWDOWN_SUSTAIN_STEPS = 3
+WALKER_HIT_DIST_M = 3.0
+CUT_IN_SIZE = VEHICLE_PRESETS["car"]
+CUT_IN_DLATERAL_PER_STEP = 0.3          # m per step squeeze-in (ticket spec)
+CUT_IN_MAX_STRAIGHT_BEND_RAD = 0.08     # per-segment heading change bound (target lane)
+CUT_IN_PAIR_DH_MAX_RAD = 0.06           # lane-pair heading alignment bound
+CUT_IN_OFFSET_RANGE_M = (2.6, 5.5)      # acceptable adjacent-lane centerline distance
+CUT_IN_CRUISE_RANGE = (4.0, 9.0)        # scripted cruise speed bounds (m/s)
+CUT_IN_TAIL_STEPS = 6                   # reaction window extends past the merge
+CUT_IN_CONTACT_DIST_M = 6.0
+CUT_IN_MAX_TRACKING_ERR_M = 0.25
+CUT_IN_ALTERNATIVE = ("kernel per-agent IDM parameter variation (per-agent aggressiveness / "
+                      "desired speed) — kernel change, out of M2 zero-kernel scope")
+WALKER_REJECT_REASONS = ("no_lane", "near_crosswalk", "edge_not_found", "edge_weird",
+                         "dynamic_overlap", "walker_spacing", "max_attempts")
+
+
+def walker_rng(seed: int) -> np.random.RandomState:
+    """Placement/kinematics RNG, independent of the episode RNG stream."""
+    return np.random.RandomState((seed * 104729 + 7) % (2 ** 31))
+
+
+def crosswalk_segments(road_elements):
+    """Crosswalk (road type 31) polylines as a (N,2,2) segment array."""
+    segs = []
+    for el in road_elements:
+        if int(el.get("type", 0)) != 31:
+            continue
+        xs, ys = el.get("x"), el.get("y")
+        if not xs or len(xs) < 2:
+            continue
+        pts = np.stack([np.asarray(xs, float), np.asarray(ys, float)], axis=1)
+        segs.extend(zip(pts[:-1], pts[1:]))
+    return np.array(segs) if segs else np.zeros((0, 2, 2))
+
+
+def segs_min_dist(p, segs):
+    """Min distance from point p to a (N,2,2) segment array."""
+    p = np.asarray(p, float)
+    best = np.inf
+    for a, b in segs:
+        d2 = _point_segment_distSq(p, np.asarray(a, float), np.asarray(b, float))
+        if d2 < best:
+            best = d2
+    return float(np.sqrt(best)) if np.isfinite(best) else np.inf
+
+
+def ray_first_hit(p, d, segs, max_m):
+    """Smallest t>0 with p + t*d on any segment (0<=u<=1); None within max_m.
+    Used to measure kerb-to-kerb road width along the crossing direction."""
+    if len(segs) == 0:
+        return None
+    a = segs[:, 0, :]
+    v = segs[:, 1, :] - segs[:, 0, :]
+    rhs = a - np.asarray(p, float)
+    det = v[:, 0] * d[1] - v[:, 1] * d[0]
+    ok = np.abs(det) > 1e-9
+    safe = np.where(ok, det, 1.0)
+    t = (v[:, 0] * rhs[:, 1] - v[:, 1] * rhs[:, 0]) / safe
+    u = (rhs[:, 0] * d[1] - rhs[:, 1] * d[0]) / safe
+    valid = ok & (t > 0.05) & (u >= 0.0) & (u <= 1.0) & (t <= max_m)
+    return float(t[valid].min()) if np.any(valid) else None
+
+
+def _nearest_on_polyline(pts, p):
+    """(dist, point) nearest point on polyline (n,2) to p."""
+    p = np.asarray(p, float)
+    best_d2, best_p = np.inf, None
+    for a, b in zip(pts[:-1], pts[1:]):
+        ab = b - a
+        denom = float(ab @ ab)
+        t = 0.0 if denom < 1e-12 else float(np.clip(((p - a) @ ab) / denom, 0.0, 1.0))
+        proj = a + t * ab
+        d2 = float((p - proj) @ (p - proj))
+        if d2 < best_d2:
+            best_d2, best_p = d2, proj
+    return float(np.sqrt(best_d2)), best_p
+
+
+def plan_walkers(rng, lanes, edges, cw_segs, dyn, count):
+    """Mid-block crossing spots: straight lane, >=12 m from any crosswalk (the
+    bin has no junction-type elements, so crosswalk distance is the
+    intersection-avoidance proxy), road edges ray-cast on both sides, start
+    OUTSIDE the near kerb (jaywalking is a violation by design — no off-road
+    check), but start/end poses must not overlap any dynamic vehicle (the
+    dynamic overlap check is kept)."""
+    placed, rejects = [], {r: 0 for r in WALKER_REJECT_REASONS}
+    for k in range(count):
+        entry = None
+        for _attempt in range(MAX_PLACE_ATTEMPTS):
+            lane = lanes.pick(rng, min_len_m=30.0, straight_only=True)
+            if lane is None:
+                rejects["no_lane"] += 1
+                break
+            s = rng.uniform(8.0, lane["total"] - 8.0)
+            x, y, z, h = lanes.pose_at(lane, s, 0.0)
+            if segs_min_dist((x, y), cw_segs) < WALKER_CROSSWALK_CLEAR_M:
+                rejects["near_crosswalk"] += 1
+                continue
+            perp = np.array([-np.sin(h), np.cos(h)])
+            d_pos = ray_first_hit((x, y), perp, edges.segs, WALKER_EDGE_SEARCH_M)
+            d_neg = ray_first_hit((x, y), -perp, edges.segs, WALKER_EDGE_SEARCH_M)
+            if d_pos is None or d_neg is None:
+                rejects["edge_not_found"] += 1
+                continue
+            if not (WALKER_MIN_EDGE_M <= min(d_pos, d_neg)
+                    and max(d_pos, d_neg) <= WALKER_MAX_EDGE_M):
+                rejects["edge_weird"] += 1
+                continue
+            side = 1.0 if rng.uniform() < 0.5 else -1.0
+            d_start, d_end = (d_pos, d_neg) if side > 0 else (d_neg, d_pos)
+            out0 = min(d_start + WALKER_START_OUT_M, WALKER_START_MAX_OUT_M)
+            out1 = min(d_end + WALKER_START_OUT_M, WALKER_START_MAX_OUT_M)
+            start = np.array([x, y]) + side * perp * out0
+            end = np.array([x, y]) - side * perp * out1
+            wp = (float(start[0]), float(start[1]), h, WALKER_SIZE_M, WALKER_SIZE_M)
+            ep = (float(end[0]), float(end[1]), h, WALKER_SIZE_M, WALKER_SIZE_M)
+            if any(obb_overlap(wp, d, margin=0.05) or obb_overlap(ep, d, margin=0.05)
+                   for d in dyn):
+                rejects["dynamic_overlap"] += 1
+                continue
+            if any(np.linalg.norm(start - np.asarray(o["start"])) < WALKER_SPACING_M
+                   for o in placed):
+                rejects["walker_spacing"] += 1
+                continue
+            entry = {"k": k, "kind": "walker", "lane_id": lane["id"], "s": float(s),
+                     "x": float(start[0]), "y": float(start[1]), "z": float(z),
+                     "heading": float(np.arctan2(-side * perp[1], -side * perp[0])),
+                     "length": WALKER_SIZE_M, "width": WALKER_SIZE_M,
+                     "start": (float(start[0]), float(start[1])),
+                     "end": (float(end[0]), float(end[1])),
+                     "dir": (float(-side * perp[0]), float(-side * perp[1])),
+                     "cross_pt": (float(x), float(y)),
+                     "crossing_width_m": float(np.linalg.norm(end - start)),
+                     "edge_out_m": [float(out0), float(out1)]}
+            break
+        if entry is None:
+            rejects["max_attempts"] += 1
+            continue
+        placed.append(entry)
+    return placed, rejects
+
+
+def plan_cut_in(rng, lanes, dyn, walkers, cruise):
+    """Pick a straight near-parallel lane pair for the scripted merge (cut-in
+    maker). The vehicle starts on the adjacent lane, drives forward at
+    ``cruise`` and squeezes toward the target lane at 0.3 m lateral per step.
+    Returns None when no usable pair / collision-free start exists."""
+    cand = []
+    for ln in lanes.lanes:
+        if ln["total"] < 40.0:
+            continue
+        dh = wrapped_angle_diff(ln["headings"][1:], ln["headings"][:-1])
+        if len(dh) and float(np.max(np.abs(dh))) > CUT_IN_MAX_STRAIGHT_BEND_RAD:
+            continue
+        cand.append(ln)
+    if not cand:
+        return None
+    mids = np.array([ln["pts"].mean(axis=0) for ln in cand])
+    mids_h = np.array([ln["headings"][len(ln["headings"]) // 2] for ln in cand])
+    for ci in rng.permutation(len(cand)):
+        lane = cand[int(ci)]
+        for frac in (0.3, 0.5, 0.7):
+            s0 = lane["total"] * frac
+            x, y, z, h = lanes.pose_at(lane, s0, 0.0)
+            p = np.array([x, y])
+            perp = np.array([-np.sin(h), np.cos(h)])
+            for jj in range(len(cand)):
+                if jj == int(ci):
+                    continue
+                other = cand[jj]
+                if abs(float(wrapped_angle_diff(mids_h[jj], h))) > CUT_IN_PAIR_DH_MAX_RAD:
+                    continue
+                if float(np.linalg.norm(mids[jj] - p)) > 40.0:
+                    continue
+                d0, proj = _nearest_on_polyline(other["pts"], p)
+                if proj is None or not (CUT_IN_OFFSET_RANGE_M[0] <= d0 <= CUT_IN_OFFSET_RANGE_M[1]):
+                    continue
+                side = float(np.sign((proj - p) @ perp))
+                if side == 0.0:
+                    continue
+                start = p + perp * side * d0
+                if any(np.linalg.norm(start - np.asarray(w["start"])) < 10.0 for w in walkers):
+                    continue
+                spose = (float(start[0]), float(start[1]), h, CUT_IN_SIZE[0], CUT_IN_SIZE[1])
+                if any(obb_overlap(spose, d, margin=0.05) for d in dyn):
+                    continue
+                return {"kind": "cut_in", "lane_id": lane["id"],
+                        "adjacent_lane_id": other["id"], "lateral_offset_m": float(d0),
+                        "side": side, "start": (float(start[0]), float(start[1])),
+                        "x": float(start[0]), "y": float(start[1]), "z": float(z),
+                        "heading": float(h),
+                        "dir": (float(np.cos(h)), float(np.sin(h))),
+                        "perp": (float(perp[0]), float(perp[1])),
+                        "length": CUT_IN_SIZE[0], "width": CUT_IN_SIZE[1],
+                        "cruise_mps": cruise, "s0": float(s0)}
+    return None
+
+
+def cut_in_pose(cut, t, dt):
+    """Scripted merge pose at loop step t (t=0 is the placed start pose):
+    forward at cruise along the target-lane heading while the lateral offset
+    toward the target lane shrinks by 0.3 m per step (both lanes straight and
+    near-parallel, so the parametric form stays on-lane)."""
+    lat = cut["side"] * max(cut["lateral_offset_m"] - CUT_IN_DLATERAL_PER_STEP * t, 0.0)
+    adv = cut["cruise_mps"] * dt * t
+    return (cut["start"][0] + cut["dir"][0] * adv + cut["perp"][0] * lat,
+            cut["start"][1] + cut["dir"][1] * adv + cut["perp"][1] * lat,
+            cut["z"], cut["heading"])
+
+
+def slowdown_onsets(speeds, t0, t1):
+    """'Obvious slowdown' events in captures [t0, t1]: ref = speed at t0
+    (>= 2 m/s floor); an event is >=3 consecutive captures at <= 0.5*ref,
+    counted at onsets only so one sustained deceleration counts once."""
+    t1 = min(t1, len(speeds) - 1)
+    if t1 < t0 or t1 - t0 + 1 < SLOWDOWN_SUSTAIN_STEPS:
+        return 0
+    ref = float(speeds[t0])
+    if not np.isfinite(ref) or ref < SLOWDOWN_REF_FLOOR_MPS:
+        return 0
+    below = speeds[t0:t1 + 1] <= SLOWDOWN_DROP_FRAC * ref
+    n = 0
+    for i in range(len(below)):
+        if below[i] and (i == 0 or not below[i - 1]) \
+                and bool(np.all(below[i:i + SLOWDOWN_SUSTAIN_STEPS])):
+            n += 1
+    return n
+
+
+def _window_rows(pos_series, vx, vy, valid, t0, t1, radius):
+    """Vehicle rows that come within ``radius`` of the scripted trajectory at
+    any capture in [t0, t1]."""
+    rows = set()
+    t1 = min(t1, len(pos_series) - 1, len(vx) - 1)
+    for t in range(t0, t1 + 1):
+        wp = pos_series[t]
+        d = np.hypot(vx[t] - wp[0], vy[t] - wp[1])
+        rows.update(int(r) for r in np.flatnonzero(valid[t] & (d <= radius)))
+    return rows
+
+
+def _window_min_dist(pos_series, vx, vy, valid, t0, t1):
+    """(min center distance, (capture, row)) between the scripted trajectory
+    and live dynamic vehicles over captures [t0, t1]; (None, None) if none."""
+    best, arg = np.inf, None
+    t1 = min(t1, len(pos_series) - 1, len(vx) - 1)
+    for t in range(t0, t1 + 1):
+        wp = pos_series[t]
+        d = np.hypot(vx[t] - wp[0], vy[t] - wp[1])
+        d[~valid[t]] = np.inf
+        j = int(np.argmin(d))
+        if d[j] < best:
+            best, arg = float(d[j]), (t, j)
+    return (best if np.isfinite(best) else None), arg
+
+
+def contact_rows(pos_series, vx, vy, coll, valid, t0, t1, thresh_m):
+    """Rows whose collision metric first latched within the window while
+    within thresh_m of the scripted actor (walker-hit / cut-in contact)."""
+    rows = set()
+    t1 = min(t1, len(pos_series) - 1, len(coll) - 1)
+    for t in range(max(t0, 1), t1 + 1):
+        onset = coll[t] & ~coll[t - 1] & valid[t]
+        wp = pos_series[t]
+        for r in np.flatnonzero(onset):
+            if np.hypot(vx[t, r] - wp[0], vy[t, r] - wp[1]) <= thresh_m:
+                rows.add(int(r))
+    return sorted(rows)
+
+
+def add_walker_callouts(pil, targets, world_to_px, cjk_path=None):
+    """Arrow + boxed-text tags on the hazard side of compares/zooms (baseline
+    side stays untagged). targets: (en, zh, world_x, world_y, hex_color)."""
+    d = ImageDraw.Draw(pil)
+    w, h = pil.size
+    font = _load_font(18, cjk_path)
+    for en, zh, wx, wy, color in targets:
+        cx, cy = world_to_px(wx, wy)
+        tx = min(cx + 26, w - 150)
+        ty = max(min(cy - 26, h - 40), 8)
+        d.line([(tx, ty), (cx, cy)], fill=(0, 0, 0), width=2)
+        vx, vy = cx - tx, cy - ty
+        norm = max(float(np.hypot(vx, vy)), 1e-6)
+        ux, uy = vx / norm, vy / norm
+        px_, py_ = -uy, ux
+        d.polygon([(cx, cy), (cx - ux * 12 + px_ * 5, cy - uy * 12 + py_ * 5),
+                   (cx - ux * 12 - px_ * 5, cy - uy * 12 - py_ * 5)], fill=(0, 0, 0))
+        text = en + (f" {zh}" if cjk_path else "")
+        box = d.textbbox((tx + 4, ty - 9), text, font=font)
+        d.rectangle(box, fill=(255, 255, 255), outline=(0, 0, 0), width=1)
+        rgb = tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
+        d.text((tx + 4, ty - 9), text, fill=rgb, font=font)
+    return pil
+
+
+def add_trail_annotations(pil, walkers, trails, world_to_px, cut_in, cut_trail,
+                          cjk_path=None):
+    """trails.png overlay: start (hollow) / end (filled) markers per walker
+    plus one stat line each (done/incomplete + distance + duration); the
+    cut-in maker labeled at its final pose."""
+    d = ImageDraw.Draw(pil)
+    font = _load_font(20, cjk_path)
+    for w in walkers:
+        pts = trails[w["row"]]
+        sx, sy = world_to_px(*pts[0])
+        ex, ey = world_to_px(*pts[-1])
+        d.ellipse([sx - 9, sy - 9, sx + 9, sy + 9], outline=WALKER_RGB, width=3)
+        d.ellipse([ex - 6, ey - 6, ex + 6, ey + 6], fill=WALKER_RGB, outline=(0, 0, 0))
+        status = "done" if w["done_step"] is not None else "incomplete"
+        text = f"walker{w['k']}: {status} {w['crossing_width_m']:.1f} m"
+        if w.get("crossing_duration_s") is not None:
+            text += f" in {w['crossing_duration_s']:.1f} s"
+        box = d.textbbox((sx + 14, sy - 34), text, font=font)
+        d.rectangle(box, fill=(255, 255, 255), outline=WALKER_RGB, width=2)
+        d.text((sx + 14, sy - 34), text, fill=(0, 0, 0), font=font)
+    if cut_in and cut_trail:
+        fx, fy = world_to_px(*cut_trail[-1])
+        text = f"cut-in maker (merge {cut_in['lateral_offset_m']:.1f} m, " \
+               f"{cut_in['cruise_mps']:.1f} m/s)"
+        box = d.textbbox((fx + 14, fy - 34), text, font=font)
+        d.rectangle(box, fill=(255, 255, 255), outline=(123, 47, 191), width=2)
+        d.text((fx + 14, fy - 34), text, fill=(123, 47, 191), font=font)
+    return pil
+
+
+def run_jaywalker(args, map_bin):
+    """M2: python-stepped jaywalker crossings + traffic reaction metrics.
+
+    Each step: set_agent_states(new walker poses) -> env.step() — vehicle
+    decisions use last-step observations while collision/TTC loops see the
+    fresh pose. A same-seed clean baseline episode provides the reaction
+    comparison and the compare/zoom artifacts. Co-sim setters only reach vec
+    env 0 -> envs=1 (forced)."""
+    if args.envs != 1:
+        print("[hazard-demo] jaywalker: co-sim setters only reach vec env 0; forcing --envs 1")
+        args.envs = 1
+    if args.walkers < 1:
+        raise ValueError("--walkers must be >= 1")
+
+    root = REPO_ROOT / args.out if not Path(args.out).is_absolute() else Path(args.out)
+    seed_dir = root / f"seed{args.seed}"
+    baseline_dir = seed_dir / "baseline" / "frames"
+    jw_dir = seed_dir / "jaywalker" / "frames"
+    compare_dir = seed_dir / "compare"
+    for d in (baseline_dir, jw_dir, compare_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    t_start = time.time()
+    print(f"[hazard-demo] mode=jaywalker seed={args.seed} map={map_bin}")
+    cjk_font = detect_cjk_font()
+    print(f"[hazard-demo] CJK font: {cjk_font or 'none -> English-only labels (no tofu)'}")
+
+    # ---- episode 1: jaywalker + (stretch) cut-in maker -----------------------
+    slots = args.walkers + (0 if args.skip_cut_in else 1)
+    env = build_env(args, map_bin, cosim_partner_slots=slots)
+    env.reset(seed=args.seed)
+    scenarios = env.get_state()
+    buffers = capture_buffers(env, scenarios, extra_agent_slots=slots)
+    road_elements = scenarios[0].get("road_elements") or []
+    traffic_elements = scenarios[0].get("traffic_elements") or []
+    map_corners = scenarios[0].get("map_corners") or []
+    sdc_row = int((scenarios[0].get("active_agent_indices") or [0])[0])
+
+    def capture():
+        env.get_obs_html_frame(
+            buffers["agent_f32"], buffers["agent_i32"], buffers["metrics_f32"],
+            buffers["puffer_f32"], buffers["traffic_i16"], buffers["goals_f32"],
+            buffers["rewards_f32"], buffers["coefs_f32"],
+        )
+
+    capture()
+    af0, ai0, mf0 = buffers["agent_f32"][0], buffers["agent_i32"][0], buffers["metrics_f32"][0]
+    lanes = LaneIndex(road_elements)
+    edges = EdgeIndex(road_elements)
+    cw_segs = crosswalk_segments(road_elements)
+    dyn = dynamic_boxes(af0, ai0)
+
+    rng = walker_rng(args.seed)
+    dt = args.dt
+    walkers, walker_rejects = plan_walkers(rng, lanes, edges, cw_segs, dyn, args.walkers)
+    if len(walkers) < args.walkers:
+        raise RuntimeError(f"only {len(walkers)}/{args.walkers} walkers placed; "
+                           f"rejects={ {k: v for k, v in walker_rejects.items() if v} }")
+    for k, w in enumerate(walkers):
+        w["row"] = args.agents_per_env + k
+        w["speed_mps"] = float(rng.uniform(*WALKER_SPEED_RANGE))
+        w["start_step"] = 1 + k * WALKER_START_STAGGER_STEPS
+        est = int(np.ceil(w["crossing_width_m"] / (w["speed_mps"] * dt)))
+        w["mid_step"] = min(w["start_step"] + max(est // 2, 1), args.steps - 1)
+        w["traveled"] = 0.0
+        w["done_step"] = None
+        w["tracking_max_err_m"] = 0.0
+    valid0 = (ai0[:, 3] == 1) & (ai0[:, 2] == 1) & (ai0[:, 5] == 0)
+    med_v = float(np.median(af0[valid0, 6])) if valid0.any() else 6.0
+    cruise = float(np.clip(med_v, *CUT_IN_CRUISE_RANGE)) if np.isfinite(med_v) else 6.0
+    cut_in = None if args.skip_cut_in else plan_cut_in(rng, lanes, dyn, walkers, cruise)
+    if cut_in:
+        cut_in["row"] = args.agents_per_env + len(walkers)
+        cut_in["merge_steps"] = int(np.ceil(cut_in["lateral_offset_m"] / CUT_IN_DLATERAL_PER_STEP))
+        cut_in["start_step"] = 1
+        cut_in["window"] = (1, min(1 + cut_in["merge_steps"] + CUT_IN_TAIL_STEPS, args.steps))
+        cut_in["tracking_max_err_m"] = 0.0
+    initial = walkers + ([cut_in] if cut_in else [])
+    print(f"[hazard-demo] walkers={len(walkers)} "
+          f"cut_in={'yes (merge %.1f m over %d steps)' % (cut_in['lateral_offset_m'], cut_in['merge_steps']) if cut_in else 'no'} "
+          f"slots={len(initial)}/{slots} cruise={cruise:.1f} m/s")
+
+    apply_static_hazards(env, args, initial)
+    capture()
+    g_state = env.get_global_agent_state(include_static=True)
+    place_err = max(max(abs(float(g_state["x"][e["idx"]]) - e["x"]),
+                        abs(float(g_state["y"][e["idx"]]) - e["y"])) for e in initial)
+    post_overlap = sum(1 for e in initial
+                       if any(obb_overlap((e["x"], e["y"], e["heading"], e["length"], e["width"]),
+                                          d, margin=0.05) for d in dyn))
+    print(f"[hazard-demo] placement readback_err={place_err} dynamic_overlap_postcheck={post_overlap}")
+
+    class_of = {**{w["row"]: "walker" for w in walkers},
+                **({cut_in["row"]: "cut_in"} if cut_in else {})}
+    static_indices = list(class_of)
+    walker_rows = [w["row"] for w in walkers]
+    trails = {w["row"]: [(float(af0[w["row"], 0]), float(af0[w["row"], 1]))] for w in walkers}
+    cut_trail = ([(float(af0[cut_in["row"], 0]), float(af0[cut_in["row"], 1]))]
+                 if cut_in else None)
+
+    per_step = []
+
+    def record_step():
+        valid = (ai0[:, 3] == 1) & (ai0[:, 2] == 1) & (ai0[:, 5] == 0)
+        per_step.append({"x": af0[:, 0].copy(), "y": af0[:, 1].copy(),
+                         "v": af0[:, 6].copy(), "valid": valid.copy(),
+                         "coll": (mf0[:, COLLISION_IDX] > 0).copy()})
+
+    record_step()
+    keyframe_paths = []
+    snap_jw = {}
+
+    def render_keyframes(step):
+        pil = render_full_map(step, af0, ai0, road_elements, traffic_elements, sdc_row,
+                              map_corners, dt, args.seed, map_bin.stem, "jaywalker",
+                              static_indices=static_indices, static_class_of=class_of,
+                              walker_indices=walker_rows,
+                              walker_trails={r: np.asarray(p) for r, p in trails.items()})
+        path = jw_dir / f"env0_t{step:03d}.png"
+        pil.save(path)
+        keyframe_paths.append(str(path.relative_to(seed_dir)))
+        if any(step == w["mid_step"] for w in walkers):
+            snap_jw[step] = (af0.copy(), ai0.copy())
+
+    actions = np.zeros((env.num_agents, 2), dtype=np.float32)
+    steps_run = 0
+    episode_end = None
+    gif_frames = []
+    gif_center = (walkers[0]["cross_pt"][0], walkers[0]["cross_pt"][1])
+    jw_keyframes = sorted(set(HAZARD_KEYFRAMES) | {w["mid_step"] for w in walkers})
+    render_keyframes(0)
+    gif_frames.append((0, af0.copy(), ai0.copy()))
+
+    for step in range(1, args.steps + 1):
+        idxs, xs, ys, zs, hs, vxs, vys, written = [], [], [], [], [], [], [], {}
+        for w in walkers:
+            if w["done_step"] is not None or step < w["start_step"]:
+                continue  # standing at the kerb / already across (c_step never moves slots)
+            w["traveled"] += w["speed_mps"] * dt
+            if w["traveled"] >= w["crossing_width_m"]:
+                w["traveled"] = w["crossing_width_m"]
+                w["done_step"] = step
+            px = w["start"][0] + w["dir"][0] * w["traveled"]
+            py = w["start"][1] + w["dir"][1] * w["traveled"]
+            v = w["speed_mps"] if w["done_step"] is None else 0.0
+            idxs.append(w["row"])
+            xs.append(px); ys.append(py); zs.append(w["z"]); hs.append(w["heading"])
+            vxs.append(w["dir"][0] * v); vys.append(w["dir"][1] * v)
+            written[w["row"]] = (px, py)
+        if cut_in is not None:
+            px, py, pz, ph = cut_in_pose(cut_in, step, dt)
+            idxs.append(cut_in["row"])
+            xs.append(px); ys.append(py); zs.append(pz); hs.append(ph)
+            vxs.append(cut_in["dir"][0] * cut_in["cruise_mps"])
+            vys.append(cut_in["dir"][1] * cut_in["cruise_mps"])
+            written[cut_in["row"]] = (px, py)
+        if idxs:
+            env.set_agent_states(
+                np.asarray(idxs, np.int32),
+                np.asarray(xs, np.float32), np.asarray(ys, np.float32),
+                np.asarray(zs, np.float32), np.asarray(hs, np.float32),
+                np.asarray(vxs, np.float32), np.asarray(vys, np.float32),
+                np.zeros(len(idxs), np.float32), np.zeros(len(idxs), np.float32),
+                None, np.zeros(len(idxs), np.float32),
+            )
+        env.step(actions)
+        steps_run = step
+        capture()
+        record_step()
+        for w in walkers:
+            trails[w["row"]].append((float(af0[w["row"], 0]), float(af0[w["row"], 1])))
+            if w["row"] in written:
+                px, py = written[w["row"]]
+                w["tracking_max_err_m"] = max(
+                    w["tracking_max_err_m"],
+                    max(abs(px - float(af0[w["row"], 0])), abs(py - float(af0[w["row"], 1]))))
+        if cut_in is not None:
+            cut_trail.append((float(af0[cut_in["row"], 0]), float(af0[cut_in["row"], 1])))
+            if cut_in["row"] in written:
+                px, py = written[cut_in["row"]]
+                cut_in["tracking_max_err_m"] = max(
+                    cut_in["tracking_max_err_m"],
+                    max(abs(px - float(af0[cut_in["row"], 0])),
+                        abs(py - float(af0[cut_in["row"], 1]))))
+        lo, hi = env.agent_offsets[0], env.agent_offsets[1]
+        if episode_end is None and bool(np.any(env.truncations[lo:hi])):
+            episode_end = step
+            print(f"[hazard-demo] env0 jaywalker episode ended at step {step}")
+            break
+        if step in jw_keyframes:
+            render_keyframes(step)
+        if args.gif_stride > 0 and step % args.gif_stride == 0:
+            gif_frames.append((step, af0.copy(), ai0.copy()))
+
+    for w in walkers:
+        w["crossing_duration_s"] = (round((w["done_step"] - w["start_step"] + 1) * dt, 2)
+                                    if w["done_step"] is not None else None)
+    jw_metrics = {
+        "steps_run": steps_run,
+        "ended_step": episode_end if episode_end is not None else f"ran to {steps_run}",
+        "collision_agents_final": int(np.sum((ai0[:, 3] == 1) & (ai0[:, 2] == 1)
+                                             & (mf0[:, COLLISION_IDX] > 0))),
+    }
+    env.close()
+
+    trail_arrays = {r: np.asarray(p) for r, p in trails.items()}
+    gif_path = seed_dir / "jaywalker" / "jaywalker.gif"
+    gif_imgs = [
+        render_gif_frame(st, af, ai, road_elements, traffic_elements, sdc_row,
+                         gif_center, HAZARD_GIF_WINDOW_M, 900, dt, args.seed,
+                         map_bin.stem, mode_label="jaywalker",
+                         static_indices=static_indices, static_class_of=class_of,
+                         walker_indices=walker_rows, walker_trails=trail_arrays)
+        for st, af, ai in gif_frames
+    ]
+    if gif_imgs:
+        gif_imgs[0].save(gif_path, save_all=True, append_images=gif_imgs[1:],
+                         duration=int(1000 / args.gif_fps), loop=0)
+
+    # ---- episode 2: same-seed clean baseline (comparison side) ---------------
+    env_b = build_env(args, map_bin)
+    env_b.reset(seed=args.seed)
+    scenarios_b = env_b.get_state()
+    buffers_b = capture_buffers(env_b, scenarios_b)
+    sdc_row_b = int((scenarios_b[0].get("active_agent_indices") or [0])[0])
+
+    def capture_b():
+        env_b.get_obs_html_frame(
+            buffers_b["agent_f32"], buffers_b["agent_i32"], buffers_b["metrics_f32"],
+            buffers_b["puffer_f32"], buffers_b["traffic_i16"], buffers_b["goals_f32"],
+            buffers_b["rewards_f32"], buffers_b["coefs_f32"],
+        )
+
+    capture_b()
+    abf, abi, amf = buffers_b["agent_f32"][0], buffers_b["agent_i32"][0], buffers_b["metrics_f32"][0]
+    per_step_b = []
+
+    def record_step_b():
+        valid = (abi[:, 3] == 1) & (abi[:, 2] == 1) & (abi[:, 5] == 0)
+        per_step_b.append({"x": abf[:, 0].copy(), "y": abf[:, 1].copy(),
+                           "v": abf[:, 6].copy(), "valid": valid.copy(),
+                           "coll": (amf[:, COLLISION_IDX] > 0).copy()})
+
+    record_step_b()
+    baseline_keyframes = []
+    snap_b = {}
+    baseline_end = None
+
+    def render_keyframes_b(step):
+        pil = render_full_map(step, abf, abi, road_elements, traffic_elements,
+                              sdc_row_b, map_corners, dt, args.seed, map_bin.stem,
+                              "baseline")
+        path = baseline_dir / f"env0_t{step:03d}.png"
+        pil.save(path)
+        baseline_keyframes.append(str(path.relative_to(seed_dir)))
+        if any(step == w["mid_step"] for w in walkers):
+            snap_b[step] = (abf.copy(), abi.copy())
+
+    baseline_keyframe_steps = sorted(set(COMPARE_KEYFRAMES) | {w["mid_step"] for w in walkers})
+    render_keyframes_b(0)
+    for step in range(1, args.steps + 1):
+        env_b.step(actions)
+        capture_b()
+        record_step_b()
+        lo, hi = env_b.agent_offsets[0], env_b.agent_offsets[1]
+        if baseline_end is None and bool(np.any(env_b.truncations[lo:hi])):
+            baseline_end = step
+            print(f"[hazard-demo] env0 baseline episode ended at step {step}")
+            break
+        if step in baseline_keyframe_steps:
+            render_keyframes_b(step)
+    baseline_metrics = {
+        "steps_run": len(per_step_b) - 1,
+        "ended_step": baseline_end if baseline_end is not None else f"ran to {len(per_step_b) - 1}",
+        "collision_agents_final": int(np.sum((abi[:, 3] == 1) & (abi[:, 2] == 1)
+                                             & (amf[:, COLLISION_IDX] > 0))),
+    }
+    env_b.close()
+
+    # ---- reaction metrics -----------------------------------------------------
+    Xj = np.stack([r["x"] for r in per_step]); Yj = np.stack([r["y"] for r in per_step])
+    Vj = np.stack([r["v"] for r in per_step]); Lj = np.stack([r["valid"] for r in per_step])
+    Cj = np.stack([r["coll"] for r in per_step])
+    Xb = np.stack([r["x"] for r in per_step_b]); Yb = np.stack([r["y"] for r in per_step_b])
+    Vb = np.stack([r["v"] for r in per_step_b]); Lb = np.stack([r["valid"] for r in per_step_b])
+    Cb = np.stack([r["coll"] for r in per_step_b])
+    len_b = len(per_step_b)
+
+    ev_j_total = ev_b_total = hit_total = 0
+    walker_outputs = []
+    for w in walkers:
+        t0 = w["start_step"]
+        t1 = w["done_step"] if w["done_step"] is not None else steps_run
+        pos = trail_arrays[w["row"]].astype(float)
+        rows_j = _window_rows(pos, Xj, Yj, Lj, t0, t1, WALKER_REACTION_RADIUS_M)
+        rows_b = _window_rows(pos, Xb, Yb, Lb, t0, min(t1, len_b - 1), WALKER_REACTION_RADIUS_M)
+        ev_j = sum(slowdown_onsets(Vj[:, r], t0, t1) for r in rows_j)
+        ev_b = sum(slowdown_onsets(Vb[:, r], t0, min(t1, len_b - 1)) for r in rows_b)
+        min_d, arg = _window_min_dist(pos, Xj, Yj, Lj, t0, t1)
+        contacts = contact_rows(pos, Xj, Yj, Cj, Lj, t0, t1, WALKER_HIT_DIST_M)
+        ev_j_total += ev_j
+        ev_b_total += ev_b
+        hit_total += len(contacts)
+        walker_outputs.append({
+            "k": w["k"], "kernel_row": int(w["row"]), "lane_id": w["lane_id"],
+            "s": round(w["s"], 2),
+            "start_m": [round(v, 2) for v in w["start"]],
+            "end_m": [round(v, 2) for v in w["end"]],
+            "crossing_width_m": round(w["crossing_width_m"], 2),
+            "speed_mps": round(w["speed_mps"], 3),
+            "start_step": w["start_step"],
+            "completed": w["done_step"] is not None,
+            "completed_step": w["done_step"],
+            "crossing_duration_s": w["crossing_duration_s"],
+            "min_dist_to_vehicle_m": round(min_d, 3) if min_d is not None else None,
+            "min_dist_capture_and_row": list(arg) if arg else None,
+            "vehicles_in_radius": len(rows_j),
+            "slowdown_events_jaywalker": ev_j,
+            "slowdown_events_baseline": ev_b,
+            "walker_hit_vehicle_rows": contacts,
+            "tracking_max_err_m": round(float(w["tracking_max_err_m"]), 4),
+        })
+
+    # ---- cut-in verdict (stretch; abandonment is an acceptable outcome) -------
+    if args.skip_cut_in:
+        cut_out = {"attempted": False, "placed": False, "verdict": "skipped",
+                   "reason": "--skip-cut-in", "alternative": CUT_IN_ALTERNATIVE}
+    elif cut_in is None:
+        cut_out = {"attempted": True, "placed": False, "verdict": "abandoned",
+                   "reason": "no straight near-parallel lane pair with a collision-free start",
+                   "alternative": CUT_IN_ALTERNATIVE}
+    else:
+        t0, t1 = cut_in["window"]
+        t1 = min(t1, steps_run)
+        pos = np.asarray(cut_trail, dtype=float)
+        rows_j = _window_rows(pos, Xj, Yj, Lj, t0, t1, WALKER_REACTION_RADIUS_M)
+        rows_b = _window_rows(pos, Xb, Yb, Lb, t0, min(t1, len_b - 1), WALKER_REACTION_RADIUS_M)
+        ev_j = sum(slowdown_onsets(Vj[:, r], t0, t1) for r in rows_j)
+        ev_b = sum(slowdown_onsets(Vb[:, r], t0, min(t1, len_b - 1)) for r in rows_b)
+        contacts = contact_rows(pos, Xj, Yj, Cj, Lj, t0, t1, CUT_IN_CONTACT_DIST_M)
+        tracked = cut_in["tracking_max_err_m"] <= CUT_IN_MAX_TRACKING_ERR_M
+        kept = tracked and ev_j >= 1 and not contacts
+        cut_out = {
+            "attempted": True, "placed": True,
+            "mechanism": "static co-sim slot puppeteered via set_agent_states (same python stepping as walkers)",
+            "lane_id": cut_in["lane_id"], "adjacent_lane_id": cut_in["adjacent_lane_id"],
+            "lateral_offset_m": round(cut_in["lateral_offset_m"], 2),
+            "merge_steps": cut_in["merge_steps"],
+            "cruise_mps": round(cut_in["cruise_mps"], 2),
+            "window_steps": [t0, t1],
+            "slowdown_events_jaywalker": ev_j,
+            "slowdown_events_baseline": ev_b,
+            "contact_vehicle_rows": contacts,
+            "tracking_max_err_m": round(float(cut_in["tracking_max_err_m"]), 4),
+            "verdict": "kept" if kept else "abandoned",
+            "reason": ("merge completed, followers reacted, no scripted contact"
+                       if kept else
+                       ("tracking error >%.2f m" % CUT_IN_MAX_TRACKING_ERR_M if not tracked
+                        else ("followers produced %d contact(s) during the merge" % len(contacts)
+                              if contacts else
+                              "0 follower slowdown events during the merge window"))),
+            "alternative": None if kept else CUT_IN_ALTERNATIVE,
+        }
+        ev_j_total += cut_out["slowdown_events_jaywalker"]
+        ev_b_total += cut_out["slowdown_events_baseline"]
+
+    reaction = {
+        "radius_m": WALKER_REACTION_RADIUS_M,
+        "definition": (f"window=[start_step, done_step]; ref = vehicle speed at window start "
+                       f"(floor {SLOWDOWN_REF_FLOOR_MPS} m/s); event = >= {SLOWDOWN_SUSTAIN_STEPS} "
+                       f"consecutive captures at <= {SLOWDOWN_DROP_FRAC}*ref, onset-counted; "
+                       "radius anchored to the scripted walker trajectory in BOTH runs"),
+        "slowdown_events_baseline_total": ev_b_total,
+        "slowdown_events_jaywalker_total": ev_j_total,
+        "walker_contact_vehicles_total": hit_total,
+    }
+
+    # ---- comparison artifacts --------------------------------------------------
+    missing = []
+    for t in COMPARE_KEYFRAMES:
+        b_png = baseline_dir / f"env0_t{t:03d}.png"
+        h_png = jw_dir / f"env0_t{t:03d}.png"
+        if b_png.is_file() and h_png.is_file():
+            targets = []
+            for w in walkers:
+                wpos = trails[w["row"]][min(t, len(trails[w["row"]]) - 1)]
+                targets.append((f"walker{w['k']} jaywalker", "jaywalker",
+                                wpos[0], wpos[1], GIF_COLORS["walker"]))
+            if cut_in:
+                cpt = cut_trail[min(t, len(cut_trail) - 1)]
+                targets.append(("cut-in maker", "cut-in vehicle", cpt[0], cpt[1],
+                                HAZARD_CLASS_COLORS["cut_in"]))
+            h_annot = add_walker_callouts(Image.open(h_png), targets,
+                                          full_map_world_to_px(map_corners), cjk_font)
+            side_by_side(b_png, h_annot, compare_dir / f"compare_t{t:03d}.png")
+        else:
+            missing.append(t)
+    zooms = []
+    for w in walkers:
+        t = w["mid_step"]
+        if t not in snap_jw or t not in snap_b:
+            missing.append(f"zoom_walker{w['k']}_t{t:03d}")
+            continue
+        ctr = w["cross_pt"]
+        zoom_w2p = lambda x, y, ctr=ctr: _world_to_px(x, y, ctr, ZOOM_PX / ZOOM_WINDOW_M, ZOOM_PX)
+        b_img = render_gif_frame(t, snap_b[t][0], snap_b[t][1], road_elements,
+                                 traffic_elements, sdc_row_b, ctr, ZOOM_WINDOW_M, ZOOM_PX,
+                                 dt, args.seed, map_bin.stem, mode_label="baseline",
+                                 min_cone_px=0, walker_min_px=0)
+        j_img = render_gif_frame(t, snap_jw[t][0], snap_jw[t][1], road_elements,
+                                 traffic_elements, sdc_row, ctr, ZOOM_WINDOW_M, ZOOM_PX,
+                                 dt, args.seed, map_bin.stem, mode_label="jaywalker",
+                                 static_indices=static_indices, static_class_of=class_of,
+                                 min_cone_px=0, walker_indices=walker_rows,
+                                 walker_trails={r: p[:t + 1] for r, p in trail_arrays.items()},
+                                 walker_min_px=0)
+        wpos = trails[w["row"]][min(t, len(trails[w["row"]]) - 1)]
+        targets = [(f"walker{w['k']} jaywalker", "jaywalker", wpos[0], wpos[1],
+                    GIF_COLORS["walker"])]
+        if cut_in:
+            cpt = cut_trail[min(t, len(cut_trail) - 1)]
+            targets.append(("cut-in maker", "cut-in vehicle", cpt[0], cpt[1],
+                            HAZARD_CLASS_COLORS["cut_in"]))
+        j_img = add_walker_callouts(j_img, targets, zoom_w2p, cjk_font)
+        zoom_name = f"zoom_walker{w['k']}_t{t:03d}.png"
+        side_by_side(b_img, j_img, compare_dir / zoom_name)
+        zooms.append(f"compare/{zoom_name}")
+
+    pil = render_full_map(steps_run, af0, ai0, road_elements, traffic_elements, sdc_row,
+                          map_corners, dt, args.seed, map_bin.stem, "jaywalker",
+                          static_indices=static_indices, static_class_of=class_of,
+                          walker_indices=walker_rows, walker_trails=trail_arrays)
+    pil = add_trail_annotations(pil, walkers, trail_arrays,
+                                full_map_world_to_px(map_corners), cut_in, cut_trail, cjk_font)
+    pil.save(seed_dir / "trails.png")
+
+    # pixel-existence audit: every image that should show walkers must contain
+    # walker-magenta pixels (hazard keyframes + compares + crossing zooms + the
+    # trails overlay); any 0 -> hard fail (same mechanism as the cone audit)
+    audit_paths = (list(keyframe_paths)
+                   + [f"compare/compare_t{t:03d}.png" for t in COMPARE_KEYFRAMES
+                      if t not in missing]
+                   + zooms + ["trails.png"])
+    walker_audit = audit_pixels(seed_dir, audit_paths, WALKER_RGB, "walker")
+    print(f"[hazard-demo] walker pixel audit: {len(walker_audit)} images, "
+          f"min count {min(walker_audit.values()) if walker_audit else 0}")
+
+    notes = [
+        "已知偏差（契约要求明录）：内核 agent type 仍为 1（VEHICLE）——行人实为 0.5×0.5m 静态槽小车，"
+        "观测/碰撞按小车对待（零内核改动，不写 type 2 PEDESTRIAN）；set_agent_states 只写 vec->envs[0]"
+        "（cosim 单 env 假设）→ 本模式强制 --envs 1。",
+        "步进机制：walker 为 cosim_partner_slots 静态槽，每步先 set_agent_states 写新位姿再 env.step()"
+        "（车流决策基于上一步观测，collision/TTC 看到当前位姿）；c_step 不移动静态槽；"
+        "脚本位姿 vs 内核回读逐步最大误差在 walkers[].tracking_max_err_m（<1e-3 m 量级）。",
+        "mid-block 口径：直车道（逐段航向变化 <0.35 rad）且距任何斑马线（type 31）≥12 m——"
+        "map bin 无 type 5-9 路口元素，斑马线距离即避路口判据；起点 = 近侧路缘外 1.2 m"
+        "（上限 5 m，不做 off-road 检查——jaywalker 本就违例），但起点/终点 OBB 与动态车辆无重叠"
+        "（动态重叠检查保留）。",
+        "度量口径：横穿窗口 = [start_step, done_step]（未完成用终点步）；反应半径 15 m，"
+        "锚定 walker 脚本轨迹（baseline 用同一轨迹锚点对比本 run 自己的车辆）；"
+        "明显减速 ref = 该车窗口首步速度（≥2 m/s 底线），事件 = 连续 ≥3 步速度 ≤0.5*ref，"
+        "按 onset 去重；最小距离 = walker 与车辆中心距，含锁停未移除车辆（removed 排除）。",
+        "车辆撞到 walker → 该车 latch stopped（collision_behavior=stop）；窗口内 3 m 内接触车辆"
+        "记入 walker_hit_vehicle_rows。",
+        "cut-in（stretch）：与 walker 同一 Python 步进机制（静态槽 + 每步 set_agent_states），"
+        "相邻车道起步、横向 0.3 m/步（dt=0.3s ≈1 m/s）挤入目标车道，纵向巡航 = seed 车流中位速"
+        "（截断 4-9 m/s）；无 victim 选择模型，起步点无动态重叠，接触事件如实记录；"
+        "verdict 判据 = 跟踪误差 ≤0.25 m 且合并窗口 followers ≥1 次减速且零接触，"
+        "不满足即 abandoned 并给替代方案（内核 per-agent IDM 参数）。",
+        "渲染遵循长期标准：单独 legend.png（index.html 首项，新增 行人=品红圆点+轨迹线、"
+        "cut-in=紫色 两行；baseline/static-hazards 图例逐字不变）；类别着色不按 id；"
+        "walker 全图强制 ≥12px 圆点，zoom 按真实尺度；walker_pixel_counts 对所有应含 walker 的图"
+        "做像素审计，任何一张为 0 即硬失败（机制沿用锥桶审计）；zoom 对准每个 walker 横穿中点时刻；"
+        "trails.png = 最终帧叠加全程轨迹 + 起点/终点标记。",
+        "回归约束：baseline / static-hazards 代码路径未动（渲染器新参数全部默认关闭，"
+        "图例仅 jaywalker 模式增行），三 seed 数字已验证 byte-identical。",
+    ]
+    seed_summary = {
+        "mode": "jaywalker",
+        "seed": args.seed,
+        "map": {"name": map_bin.stem, "path": str(map_bin)},
+        "agents_per_env": args.agents_per_env,
+        "steps_requested": args.steps,
+        "dt": dt,
+        "placement": {
+            "walkers_placed": len(walkers),
+            "reject_reasons": {k: v for k, v in walker_rejects.items() if v},
+            "slots_used": len(initial),
+            "readback_max_err_m": round(float(place_err), 6),
+            "dynamic_overlap_violations_postcheck": int(post_overlap),
+        },
+        "walkers": walker_outputs,
+        "cut_in": cut_out,
+        "reaction": reaction,
+        "simulation": {
+            "window_step": min(steps_run, len_b - 1),
+            "collision_agents_baseline_final": baseline_metrics["collision_agents_final"],
+            "collision_agents_jaywalker_final": jw_metrics["collision_agents_final"],
+            "baseline": baseline_metrics,
+            "jaywalker": jw_metrics,
+        },
+        "render_audit": {
+            "walker_color_rgb": list(WALKER_RGB),
+            "walker_min_diam_px_full_map": WALKER_MIN_DIAM_PX,
+            "zoom_scale": "true size (walker_min_px=0)",
+            "walker_pixel_counts": walker_audit,
+            "images_checked": len(walker_audit),
+            "all_nonzero": True,
+        },
+        "artifacts": {
+            "baseline_keyframes": baseline_keyframes,
+            "jaywalker_keyframes": keyframe_paths,
+            "jaywalker_gif": "jaywalker/jaywalker.gif" if gif_imgs else None,
+            "compare": [f"compare/compare_t{t:03d}.png" for t in COMPARE_KEYFRAMES
+                        if t not in missing],
+            "zooms": zooms,
+            "trails_overlay": "trails.png",
+        },
+        "missing_artifacts": missing,
+        "runtime_s": round(time.time() - t_start, 1),
+        "notes": notes,
+    }
+    (seed_dir / "summary.json").write_text(
+        json.dumps(seed_summary, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+
+    seed_summaries = []
+    for d in sorted(root.glob("seed*/summary.json")):
+        try:
+            seed_summaries.append(json.loads(d.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError):
+            pass
+    write_jaywalker_root(root, seed_summaries, cjk_path=cjk_font)
+    comp = sum(1 for w in walker_outputs if w["completed"])
+    print(f"[hazard-demo] artifacts -> {root} ({seed_summary['runtime_s']}s); "
+          f"crossed {comp}/{len(walker_outputs)}, slowdown events "
+          f"baseline={ev_b_total} vs jaywalker={ev_j_total}, "
+          f"cut_in={cut_out['verdict']}")
+
+
+def write_reactions_chart(root, seed_summaries):
+    """Two-panel aggregate: per-walker min distance to traffic during crossing;
+    slowdown events baseline vs jaywalker per seed (same windows, same anchor)."""
+    import matplotlib.pyplot as plt
+
+    seed_summaries = sorted(seed_summaries, key=lambda s: s["seed"])
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.4))
+    palette = plt.cm.tab10(np.arange(len(seed_summaries)))
+    labels, vals, bar_colors = [], [], []
+    for si, s in enumerate(seed_summaries):
+        for w in s["walkers"]:
+            labels.append(f"s{s['seed']}w{w['k']}")
+            vals.append(w["min_dist_to_vehicle_m"] if w["min_dist_to_vehicle_m"] is not None else 0.0)
+            bar_colors.append(palette[si])
+    ax1.bar(range(len(vals)), vals, color=bar_colors)
+    ax1.axhline(2.0, color="red", linestyle="--", linewidth=1, label="2 m reference")
+    ax1.set_xticks(range(len(labels)))
+    ax1.set_xticklabels(labels, fontsize=8, rotation=45)
+    ax1.set_ylabel("min distance walker-vehicle (m)")
+    ax1.set_title("min distance during crossing (per walker)")
+    ax1.legend(fontsize=8)
+    seeds = [str(s["seed"]) for s in seed_summaries]
+    b_vals = [s["reaction"]["slowdown_events_baseline_total"] for s in seed_summaries]
+    j_vals = [s["reaction"]["slowdown_events_jaywalker_total"] for s in seed_summaries]
+    xpos = np.arange(len(seeds))
+    width = 0.35
+    ax2.bar(xpos - width / 2, b_vals, width, label="baseline", color="#8c8c8c")
+    ax2.bar(xpos + width / 2, j_vals, width, label="jaywalker", color="#FF00FF")
+    ax2.set_xticks(xpos)
+    ax2.set_xticklabels(seeds)
+    ax2.set_xlabel("seed")
+    ax2.set_ylabel("obvious-slowdown events (15 m radius)")
+    ax2.set_title("traffic slowdown events: baseline vs jaywalker")
+    ax2.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(root / "reactions.png", dpi=140)
+    plt.close(fig)
+
+
+def write_jaywalker_root(root, seed_summaries, cjk_path=None):
+    """Aggregate legend.png / reactions.png / summary.json / index.html over seed dirs."""
+    render_legend_png(root / "legend.png", "jaywalker", cjk_path=cjk_path)
+    all_w = [w for s in seed_summaries for w in s["walkers"]]
+    mind = [w["min_dist_to_vehicle_m"] for w in all_w
+            if w["min_dist_to_vehicle_m"] is not None]
+    completed = sum(1 for w in all_w if w["completed"])
+    aggregate = {
+        "walkers_total": len(all_w),
+        "completed_total": completed,
+        "completion_rate": round(completed / len(all_w), 3) if all_w else None,
+        "min_dist_m": ({"min": round(float(np.min(mind)), 3),
+                        "p50": round(float(np.percentile(mind, 50)), 3),
+                        "p95": round(float(np.percentile(mind, 95)), 3)} if mind else None),
+        "slowdown_events_baseline_total": sum(s["reaction"]["slowdown_events_baseline_total"]
+                                              for s in seed_summaries),
+        "slowdown_events_jaywalker_total": sum(s["reaction"]["slowdown_events_jaywalker_total"]
+                                               for s in seed_summaries),
+        "walker_contact_vehicles_total": sum(s["reaction"]["walker_contact_vehicles_total"]
+                                             for s in seed_summaries),
+        "cut_in_verdicts": {str(s["seed"]): s["cut_in"].get("verdict")
+                            for s in sorted(seed_summaries, key=lambda x: x["seed"])},
+    }
+    agg = {
+        "mode": "jaywalker",
+        "seeds": [s["seed"] for s in seed_summaries],
+        "aggregate": aggregate,
+        "per_seed": [{"seed": s["seed"], "walkers": len(s["walkers"]),
+                      "completed": sum(1 for w in s["walkers"] if w["completed"]),
+                      "reaction": s["reaction"],
+                      "cut_in_verdict": s["cut_in"].get("verdict"),
+                      "render_audit": {"images_checked": s["render_audit"]["images_checked"],
+                                       "all_nonzero": s["render_audit"]["all_nonzero"]}}
+                     for s in sorted(seed_summaries, key=lambda x: x["seed"])],
+        "notes": (seed_summaries[-1].get("notes") if seed_summaries else []),
+    }
+    (root / "summary.json").write_text(
+        json.dumps(agg, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    if not seed_summaries:
+        return
+    try:
+        write_reactions_chart(root, seed_summaries)
+    except Exception as exc:  # chart is cosmetic; never sink the run
+        print(f"[hazard-demo] reactions chart skipped: {exc}")
+
+    rows = ""
+    for s in sorted(seed_summaries, key=lambda x: x["seed"]):
+        md = [w["min_dist_to_vehicle_m"] for w in s["walkers"]
+              if w["min_dist_to_vehicle_m"] is not None]
+        md_txt = (f"min={min(md):.2f} / p50={np.percentile(md, 50):.2f} / "
+                  f"p95={np.percentile(md, 95):.2f}" if md else "n/a")
+        comp = sum(1 for w in s["walkers"] if w["completed"])
+        r = s["reaction"]
+        cells = (f"<td>{comp}/{len(s['walkers'])}</td><td>{md_txt}</td>"
+                 f"<td>{r['slowdown_events_baseline_total']} → "
+                 f"{r['slowdown_events_jaywalker_total']}</td>"
+                 f"<td>{r['walker_contact_vehicles_total']}</td>"
+                 f"<td>{s['cut_in'].get('verdict')} — {s['cut_in'].get('reason', '')}</td>")
+        rows += f"<tr><td>seed {s['seed']}</td>{cells}</tr>"
+    galleries = ""
+    for s in sorted(seed_summaries, key=lambda x: x["seed"]):
+        sd = f"seed{s['seed']}"
+        frames = "".join(
+            f'<figure><img src="{sd}/jaywalker/frames/{p.name}"/>'
+            f"<figcaption>{p.name}</figcaption></figure>"
+            for p in sorted((root / sd / "jaywalker" / "frames").glob("*.png")))
+        compares = "".join(
+            f'<figure><img src="{sd}/compare/{p.name}"/>'
+            f"<figcaption>{p.name}（左 baseline / 右 jaywalker）</figcaption></figure>"
+            for p in sorted((root / sd / "compare").glob("*.png")))
+        trails_img = (f'<figure><img src="{sd}/trails.png"/>'
+                      f"<figcaption>trails.png — 最终帧叠加全程轨迹</figcaption></figure>"
+                      if (root / sd / "trails.png").is_file() else "")
+        gif = (f'<img src="{sd}/jaywalker/jaywalker.gif" width="560"/>'
+               if (root / sd / "jaywalker" / "jaywalker.gif").is_file() else "")
+        galleries += (f"<h2>seed {s['seed']}</h2>"
+                      f"<h3>jaywalker 全图帧</h3>{frames}"
+                      f"<h3>compare / 横穿事件 zoom</h3>{compares}"
+                      f"<h3>轨迹叠加（最终帧 + 全程 trail）</h3>{trails_img}"
+                      f"<h3>跟车 GIF（镜头对准横穿点）</h3>{gif}\n")
+    html = f"""<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8"/>
+<title>Slipstream hazard-demo · M2 jaywalker</title>
+<style>
+  body {{ font-family: -apple-system, "Segoe UI", sans-serif; margin: 24px; background: #fafafa; color: #222; }}
+  h1, h2, h3 {{ color: #333; }} table {{ border-collapse: collapse; margin: 12px 0; }}
+  th, td {{ border: 1px solid #ccc; padding: 6px 10px; font-size: 13px; }}
+  th {{ background: #eee; }} figure {{ margin: 8px; display: inline-block; }}
+  img {{ border: 1px solid #ddd; max-width: 640px; }} figcaption {{ font-size: 12px; color: #666; }}
+  code {{ background: #eee; padding: 2px 6px; }}
+</style></head><body>
+  <h1>M2 jaywalker · python-stepped 行人横穿 + 反应度量</h1>
+  <p>命令: <code>PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py --mode jaywalker --seed &lt;42|43|44&gt;</code></p>
+  <h2>图例（legend.png 单独成图，index 首项；行人=品红圆点+轨迹线）</h2>
+  <img src="legend.png" width="480"/>
+  <img src="reactions.png" width="680"/>
+  <h2>汇总</h2>
+  <ul>
+    <li>完成横穿 {aggregate['completed_total']}/{aggregate['walkers_total']}
+        （完成率 {aggregate['completion_rate']}）；最小距离分布
+        {aggregate['min_dist_m']}；减速事件 baseline {aggregate['slowdown_events_baseline_total']}
+        vs jaywalker {aggregate['slowdown_events_jaywalker_total']}；
+        walker 接触车辆 {aggregate['walker_contact_vehicles_total']}。</li>
+    <li>已知偏差：内核 type 仍为 1 (VEHICLE)，行人按小车对待；set_agent_states 只写 envs[0] → 强制 --envs 1。</li>
+    <li>像素审计：summary.json render_audit.walker_pixel_counts，任何一张应含 walker 的图品红像素为 0 即硬失败。</li>
+  </ul>
+  <h2>每 seed 度量</h2>
+  <table><tr><th>seed</th><th>完成横穿</th><th>最小距离 (m)</th><th>减速事件 baseline → jaywalker</th><th>walker 接触车辆</th><th>cut-in verdict</th></tr>
+  {rows}</table>
+  {galleries}
+  <h2>口径 / notes</h2><ul>{''.join(f'<li>{n}</li>' for n in agg['notes'])}</ul>
+</body></html>"""
+    (root / "index.html").write_text(html, encoding="utf-8")
+
+
 def main():
     args = parse_args()
     if args.out is None:
-        args.out = "artifacts/static-hazards" if args.mode == "static-hazards" else "artifacts/baseline"
+        args.out = {"baseline": "artifacts/baseline",
+                    "static-hazards": "artifacts/static-hazards",
+                    "jaywalker": "artifacts/jaywalker"}[args.mode]
     if args.mode == "static-hazards":
         out_dir = REPO_ROOT / args.out if not Path(args.out).is_absolute() else Path(args.out)
         out_dir.mkdir(parents=True, exist_ok=True)
         map_bin = resolve_map_bin(args.map_dir, args.map)
         run_static_hazards(args, map_bin)
+        return
+    if args.mode == "jaywalker":
+        out_dir = REPO_ROOT / args.out if not Path(args.out).is_absolute() else Path(args.out)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        map_bin = resolve_map_bin(args.map_dir, args.map)
+        run_jaywalker(args, map_bin)
         return
     t_start = time.time()
     out_dir = REPO_ROOT / args.out if not Path(args.out).is_absolute() else Path(args.out)

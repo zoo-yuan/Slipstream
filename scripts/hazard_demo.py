@@ -38,6 +38,7 @@ Notes (see .wayfinder/research/log-to-map-findings.md):
 """
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -123,6 +124,61 @@ def resolve_map_bin(map_dir: str, map: str) -> Path:
     raise FileNotFoundError(
         f"map '{map}' not found under {root}; available: {available or 'directory missing'}"
     )
+
+
+# --- kernel provenance (in-repo kernel pinning) ------------------------------
+# The demos borrow only the sibling-repo interpreter (PYTHONPATH=$PWD
+# ../PufferDrive/.venv/bin/python); pufferlib and the drive binding .so must
+# come from THIS repo. Early artifacts ran on the sibling venv's old-kernel
+# binary (135-step truncation / 78 collisions seed42); the pinned in-repo
+# build runs the full 200 steps / 31 collisions. verify_in_repo_kernel()
+# rejects any future import-chain drift before a run starts.
+KERNEL_BUILD_COMMAND = "NO_TRAIN=1 python setup.py build_ext --inplace --force"
+
+
+def verify_in_repo_kernel() -> None:
+    """Refuse to run unless the import chain resolves to this repo's kernel."""
+    import pufferlib
+    import pufferlib.ocean.drive.binding as binding
+
+    pl = Path(pufferlib.__file__).resolve()
+    so = Path(binding.__file__).resolve()
+    if not pl.is_relative_to(REPO_ROOT):
+        raise RuntimeError(
+            f"in-repo kernel required: pufferlib resolved to {pl}, not under {REPO_ROOT}; "
+            "run with PYTHONPATH=$PWD so the repo package shadows the venv copy"
+        )
+    if not so.is_relative_to(REPO_ROOT):
+        raise RuntimeError(
+            f"in-repo kernel required: drive binding .so resolved to {so}, not under {REPO_ROOT}; "
+            f"rebuild with: {KERNEL_BUILD_COMMAND}"
+        )
+    print(f"[hazard-demo] kernel pinned: {pl}")
+    print(f"[hazard-demo] binding .so: {so} sha256={kernel_binding_sha256()}")
+
+
+def kernel_binding_sha256() -> str:
+    import pufferlib.ocean.drive.binding as binding
+
+    return hashlib.sha256(Path(binding.__file__).resolve().read_bytes()).hexdigest()
+
+
+def kernel_provenance() -> dict:
+    """Provenance block embedded top-level in every mode's summary.json."""
+    try:
+        git_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT,
+                                 capture_output=True, text=True, check=True).stdout.strip()
+    except (subprocess.CalledProcessError, OSError):
+        git_sha = "unknown"
+    import pufferlib
+    import pufferlib.ocean.drive.binding as binding
+    return {
+        "pufferlib_path": str(Path(pufferlib.__file__).resolve()),
+        "binding_so": str(Path(binding.__file__).resolve()),
+        "binding_sha256": kernel_binding_sha256(),
+        "git_sha": git_sha,
+        "built_by": KERNEL_BUILD_COMMAND,
+    }
 
 
 def build_env(args, map_bin: Path, cosim_partner_slots: int = 0):
@@ -1566,6 +1622,7 @@ def run_static_hazards(args, map_bin):
     ]
     seed_summary = {
         "mode": "static-hazards",
+        "kernel": kernel_provenance(),
         "seed": args.seed,
         "map": {"name": map_bin.stem, "path": str(map_bin)},
         "agents_per_env": args.agents_per_env,
@@ -1612,6 +1669,7 @@ def write_root_artifacts(root, seed_summaries, cjk_path=None):
     render_legend_png(root / "legend.png", "static-hazards", cjk_path=cjk_path)
     agg = {
         "mode": "static-hazards",
+        "kernel": kernel_provenance(),
         "seeds": [s["seed"] for s in seed_summaries],
         "per_seed": [
             {"seed": s["seed"], "placement": s["placement"], "legality": s["legality"],
@@ -2524,6 +2582,7 @@ def run_jaywalker(args, map_bin):
     ]
     seed_summary = {
         "mode": "jaywalker",
+        "kernel": kernel_provenance(),
         "seed": args.seed,
         "map": {"name": map_bin.stem, "path": str(map_bin)},
         "agents_per_env": args.agents_per_env,
@@ -2648,6 +2707,7 @@ def write_jaywalker_root(root, seed_summaries, cjk_path=None):
     }
     agg = {
         "mode": "jaywalker",
+        "kernel": kernel_provenance(),
         "seeds": [s["seed"] for s in seed_summaries],
         "aggregate": aggregate,
         "per_seed": [{"seed": s["seed"], "walkers": len(s["walkers"]),
@@ -2740,6 +2800,7 @@ def write_jaywalker_root(root, seed_summaries, cjk_path=None):
 
 def main():
     args = parse_args()
+    verify_in_repo_kernel()
     if args.out is None:
         args.out = {"baseline": "artifacts/baseline",
                     "static-hazards": "artifacts/static-hazards",
@@ -2907,6 +2968,7 @@ def main():
 
     summary = {
         "mode": args.mode,
+        "kernel": kernel_provenance(),
         "seed": args.seed,
         "steps_requested": args.steps,
         "steps_run": steps_run,

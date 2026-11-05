@@ -1,6 +1,6 @@
 # STATE
 
-As-of: 提交后更新
+As-of: a39c94b
 （2026-11-05 票 09 收章：评测资产就位；hazard 原型票已闭）
 约定：AGENTS.md 是放置规则权威；strata 分层（STATE / 台账）自 2026-11-03 启用；TerraZero 复刻 effort 的活图在 `.wayfinder/map.md`。
 

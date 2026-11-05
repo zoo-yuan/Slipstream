@@ -20,6 +20,7 @@
 - [规则几何执法核对：PufferDrive 现状 vs TerraZero §3.3 清单](tickets/10-规则几何执法核对.md)：六项中 4 已具备、实缺口仅三小补丁（红灯 footprint 扫越、停牌 dwell 采样化、行人豁免 gate，合计 ≈2-4 工程日）；off-road 确带 elevation gate；lane direction 与 §3.3 同构无需新件。
 - [基底裁决：复用 PufferDrive 3.0 家族还是别路，Slipstream 如何承接](tickets/01-基底裁决-复用PufferDrive还是别路.md)：Slipstream 为主仓；基线 = `3.0` 干净上游，**保留历史**导入；`9_bernhard_dev` 为挖矿源（噪声/权重按需 cherry-pick）；Nova bridge WIP 留 PufferDrive 仓。执行见「基线导入执行」票。
 - [复刻范围与验收口径：能力矩阵、验收标准、算力包线](tickets/05-复刻范围与验收口径.md)：能力包 = 场景生成层 + 零演示配方 + sim-agent（吞吐出界）；验收 = 内部优先 + 外部榜单为辅；算力 = 单服务器 GPU（1e9–1e10 步）。
+- [基线导入执行：3.0 历史进 Slipstream master + 工程约定初始化](tickets/11-基线导入执行.md)：已执行——拉最新上游后基线 = `3.0@2c1ca3e4`（比 80a681b4 新 6 提交：Longest6v1/Alpasim eval、overspeed reward 调整）；保留全历史；tag `baseline/pufferdrive-3.0-2c1ca3e4`；资产/strata 两提交（a920284、0ebd01d）。
 
 ## Not yet specified
 

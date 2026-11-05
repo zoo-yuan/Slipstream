@@ -4,14 +4,16 @@
 Runs a pure-map gigaflow episode with every agent on the IDM controller,
 captures the global agent state every step, and renders top-down artifacts:
 
-- keyframe PNGs reusing the upstream renderer ``pufferlib.viz.plot_simulator_state``
-- a cropped follow-cam GIF assembled with pillow
+- full-map keyframe PNGs and the follow-cam GIF from ONE pillow renderer
+  (below): class-based coloring — SDC=red, vehicles=blue, latched=gray, static
+  hazards tinted by class (parked=navy, collided=dark red, cones=orange diamond)
 - ``index.html`` (frames + metrics table) and ``summary.json`` under
-  ``artifacts/baseline/``
-- every PNG/GIF frame carries a top-left legend whose rows map 1:1 onto the
-  colors actually drawn by that renderer (viz.py for PNGs, the pillow GIF
-  renderer below); static-hazard renders additionally re-tint the static slots
-  by hazard class and annotate each hazard on compare/zoom images
+  ``artifacts/<mode>/``
+- the legend is a standalone ``legend.png`` (first item of index.html); frames
+  carry no legend box, only a small top-right "legend: see legend.png" line
+- cones draw as diamonds with a forced >=12 px diagonal on full maps (zooms
+  re-render at true scale); every image that should show cones is pixel-audited
+  into ``summary.json`` ``render_audit`` — any zero count fails the run
 
 Usage:
     PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py \
@@ -215,6 +217,10 @@ GIF_COLORS = {
 TRAFFIC_STATE_COLORS = {0: "#8c8c8c", 1: "#ff0000", 2: "#ffee00", 3: "#00cc00", 4: "#8c8c8c"}
 # traffic control states: constants.h TRAFFIC_CONTROL_STATE_{UNKNOWN,RED,YELLOW,GREEN,OFF}
 
+FULL_MAP_PX = 2000       # full-map PNG side length in px
+CONE_MIN_DIAM_PX = 12    # forced minimum cone diamond diagonal on full maps
+ZOOM_PX = 900            # zoom render side length (true-scale cones)
+
 
 def _world_to_px(x, y, center, scale, size_px):
     px = (x - center[0]) * scale + size_px / 2
@@ -230,11 +236,14 @@ def _polyline(element, key):
 def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements, sdc_row,
                      center, window_m, size_px, dt, seed, map_name,
                      mode_label="baseline", static_indices=None, static_class_of=None,
-                     legend_entries=None, cjk_path=None):
-    """Follow-cam frame. Geometry/colors are mode-independent; overlays are
-    additive: legend box top-left (rows mirror this renderer's colors), HUD
-    moved to the top-right, static slots tinted by hazard class when
-    ``static_class_of`` is given (baseline keeps plain geometry)."""
+                     min_cone_px=CONE_MIN_DIAM_PX):
+    """Top-down frame; the single renderer for full-map keyframes and GIFs.
+
+    Class-based coloring (owner acceptance 2026-11-05 R2): SDC red, vehicles
+    blue, latched gray, static slots tinted by ``static_class_of``. Cones draw
+    as a diamond marker with diagonal max(min_cone_px, true size); pass
+    min_cone_px=0 for true-scale zoom renders. No in-frame legend box: the HUD
+    ends with a "legend: see legend.png" pointer to the standalone image."""
     scale = size_px / window_m
     img = Image.new("RGB", (size_px, size_px), GIF_COLORS["background"])
     draw = ImageDraw.Draw(img)
@@ -302,6 +311,16 @@ def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements
             wx = x + lx * cos_h - ly * sin_h
             wy = y + lx * sin_h + ly * cos_h
             poly.append(_world_to_px(wx, wy, center, scale, size_px))
+        if i in static_set and (static_class_of or {}).get(i) == "cone":
+            # 0.5 m cones are sub-pixel on full maps: draw a diamond marker with
+            # diagonal max(min_cone_px, true size); min_cone_px=0 -> true scale
+            ccx, ccy = _world_to_px(x, y, center, scale, size_px)
+            diag = max(float(min_cone_px), length * scale)
+            r = diag / 2.0
+            draw.polygon([(ccx, ccy - r), (ccx + r, ccy), (ccx, ccy + r), (ccx - r, ccy)],
+                         fill=HAZARD_CLASS_COLORS["cone"], outline=(0, 0, 0),
+                         width=2 if diag >= 16 else 1)
+            continue
         if i in static_set:
             fill = HAZARD_CLASS_COLORS[(static_class_of or {}).get(i, "cone")]
         else:
@@ -311,7 +330,8 @@ def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements
         tipx, tipy = _world_to_px(x + 0.6 * length * cos_h, y + 0.6 * length * sin_h, center, scale, size_px)
         draw.line([poly[0], (tipx, tipy)], fill="#222222", width=1)
 
-    # HUD + scale bar (right-aligned: the legend owns the top-left corner)
+    # HUD + scale bar (top-right only: the legend lives in the standalone
+    # legend.png; frames end the HUD with a pointer to it)
     speeds = agent_f32[active, 6]
     mean_v = float(np.mean(speeds)) if speeds.size else 0.0
     n_stopped = int(np.sum(agent_i32[active, 4] == 1))
@@ -324,11 +344,10 @@ def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements
                   for k in ("parked", "collided", "cone")}
         hud.append(f"hazards: parked={counts['parked']} cluster={counts['collided']} "
                    f"cones={counts['cone']}")
+    hud.append("legend: see legend.png")
     for i, line in enumerate(hud):
         x = size_px - int(draw.textlength(line)) - 10
         draw.text((x, 8 + i * 16), line, fill=GIF_COLORS["ink"])
-    if legend_entries:
-        draw_legend(img, legend_entries, font_px=12, cjk_path=cjk_path)
     bar_m, bar_px = 50.0, 50.0 * scale
     x0, y0 = size_px - int(bar_px) - 16, size_px - 24
     draw.line([(x0, y0), (x0 + bar_px, y0)], fill=GIF_COLORS["ink"], width=2)
@@ -391,7 +410,9 @@ def write_index_html(out_dir, args, map_bin, summary, keyframe_paths, gif_path):
 <body>
   <h1>M0 baseline visualization · gigaflow + IDM</h1>
   <p>命令: <code>{cmd} --seed {args.seed}</code></p>
-  <p>地图: <code>{map_bin}</code> · seed={args.seed} · {episode_note}</p>
+  <h2>图例 (legend.png — 渲染帧内不再内嵌图例，帧右上角仅一行小字指认)</h2>
+  <img src="legend.png" width="460"/>
+  <p>地图: <code>{map_bin}</code> · seed={args.seed} · {episode_note}</p></p>
   <h2>跟车 GIF (env 0, 窗口 {args.gif_window_m:.0f} m)</h2>
   <img src="{gif_path}" alt="baseline gif" width="640"/>
   {keyframe_html}
@@ -881,29 +902,26 @@ def verify_static_hazards(env, placed, idxs, agent_f32, agent_i32):
     }
 
 
-# --- legend & hazard annotation layer (ticket 07 owner acceptance 2026-11-05) ---
+# --- legend, class coloring & pixel audit (ticket 07 owner acceptance R2) ----
 #
-# Owner feedback: renders were unreadable (bbox colors, goal rings, cones
-# indistinguishable). Every artifact now carries a top-left legend whose rows
-# are transcribed 1:1 from the renderer that produced the frame:
-#   PNG keyframes  -> pufferlib/viz.py plot_simulator_state semantics
-#   GIF frames     -> render_gif_frame semantics above (incl. crosswalk type 31,
-#                     which viz.py does not draw)
-# Hazard classes get dedicated colors (task spec: cones=orange, parked=blue,
-# cluster=dark red), redrawn over viz's uniform inactive gray via the known
-# slot poses; compare/zoom frames add text callouts (hazard side only).
+# Owner feedback round 2: in-frame legends overlapped the map; the 18-color
+# agent-id palette (upstream viz.py) read as pedestrians/cyclists; 0.5 m cones
+# were sub-pixel. Response: ONE pillow renderer (render_gif_frame) for ALL
+# images — full-map keyframes and GIF frames share class coloring; the legend
+# is a standalone legend.png (first item of index.html); cones draw as diamonds
+# with a forced minimum diagonal on full maps while zooms re-render at true
+# scale; every image that should show cones is pixel-audited into summary
+# render_audit (zero cone pixels in any audited image fails the run).
 HAZARD_CLASS_COLORS = {
     "cone": "#FF8C00",     # orange; GIF cyclist (#ff8c00) never spawns in gigaflow
     "parked": "#0D1F8C",   # deep navy, clearly darker than vehicle steel blue
-    "collided": "#8B0000",  # dark red vs SDC #d62728 / viz latched pure red #FF0000
+    "collided": "#8B0000",  # dark red vs SDC #d62728 / latched gray
 }
 HAZARD_CLASS_LABELS = {
     "parked": ("parked", "路侧停车"),
     "collided": ("cluster", "碰撞簇"),
     "cone": ("cones", "锥桶"),
 }
-VIZ_FIG_PX = 2000  # viz.py SIMULATOR_FIGSIZE (20, 20) in × SIMULATOR_DPI 100
-VIZ_MARK_R_PX = 9  # fixed marker radius: 0.5 m cones must stay visible full-map
 
 
 def detect_cjk_font():
@@ -948,8 +966,9 @@ def _label(entry, cjk_path):
 
 def hazard_legend_entries():
     return [
-        {"sw": "rect", "colors": [HAZARD_CLASS_COLORS["cone"]],
-         "en": "cones: construction cone (diamond marker)", "zh": "锥桶"},
+        {"sw": "diamond", "colors": [HAZARD_CLASS_COLORS["cone"]],
+         "en": "cones: construction cone (orange diamond, >=12 px full map)",
+         "zh": "锥桶"},
         {"sw": "rect", "colors": [HAZARD_CLASS_COLORS["parked"]],
          "en": "parked: kerbside static vehicle", "zh": "路侧停车"},
         {"sw": "rect", "colors": [HAZARD_CLASS_COLORS["collided"]],
@@ -957,53 +976,21 @@ def hazard_legend_entries():
     ]
 
 
-def viz_legend_entries(mode):
-    """Rows mirroring viz.plot_simulator_state drawing code (pufferlib/viz.py):
-    _render_roads / _render_traffic / _render_agents, one row per drawn color.
-    Yield signs are disabled in this demo (yield_signs_enabled=False) and are
-    therefore not listed."""
-    import pufferlib.viz as viz
-    ent = []
-    if mode == "static-hazards":  # hazard rows first: they re-tint viz's gray slots
-        ent += hazard_legend_entries()
-    ent += [
-        {"sw": "palette", "colors": list(viz.VEHICLE_COLORS),
-         "en": "vehicle: 18-color palette indexed by agent id", "zh": "车辆(按id取色)"},
-        {"sw": "rect", "colors": ["#FF0000"],
-         "en": "latched vehicle: collision/offroad/red-light/stop", "zh": "违规锁停"},
-        {"sw": "dotring", "colors": ["#1F77B4"],
-         "en": "goal: dot + dashed 2 m ring (vehicle's color)", "zh": "目标点圆环"},
-        {"sw": "lights", "colors": ["#FF0000", "#FFFF00", "#00FF00", "#808080"],
-         "en": "traffic light stop line R/Y/G/unknown-off", "zh": "信号灯停止线"},
-        {"sw": "dash", "colors": ["#FF0000"],
-         "en": "stop sign: black line + red dash overlay", "zh": "停车牌标线"},
-        {"sw": "line", "colors": [viz.COLORS["lane"]],
-         "en": "lane polyline (road type 1-3)", "zh": "车道"},
-        {"sw": "dash", "colors": [viz.COLORS["road_line"]],
-         "en": "lane marking (type 11-18, dashed)", "zh": "车道标线"},
-        {"sw": "line", "colors": [viz.COLORS["road_edge"]],
-         "en": "road edge (type 21-23)", "zh": "道路边线"},
-        {"sw": "text",
-         "en": "black number = agent id", "zh": "车辆编号"},
-    ]
-    return ent
-
-
-def gif_legend_entries(mode):
-    """Rows mirroring render_gif_frame above (this script's pillow renderer).
-    The GIF draws crosswalks (type 31) and colors ALL traffic stop lines by
-    pregenerated state; it draws no goal rings and no agent-id numbers."""
+def legend_entries(mode):
+    """Rows for the standalone legend.png. Mirrors render_gif_frame 1:1 (it is
+    now the only renderer, so one legend covers full-map PNGs and GIF frames).
+    Categories that never spawn are NOT listed: gigaflow spawns type-1
+    vehicles only, so no pedestrian/cyclist rows (M2 re-adds them when those
+    agents actually appear); no goal ring / agent-id rows either (this
+    renderer draws neither)."""
     ent = []
     if mode == "static-hazards":
         ent += hazard_legend_entries()
     ent += [
         {"sw": "rect", "colors": [GIF_COLORS["vehicle"]], "en": "vehicle (IDM)", "zh": "车辆"},
         {"sw": "rect", "colors": [GIF_COLORS["sdc"]], "en": "SDC (camera target)", "zh": "主车"},
-        {"sw": "rect", "colors": [GIF_COLORS["stopped"]], "en": "latched stopped", "zh": "违规锁停"},
-        {"sw": "rect", "colors": [GIF_COLORS["pedestrian"]],
-         "en": "pedestrian type 2 (not spawned here)", "zh": "行人"},
-        {"sw": "rect", "colors": [GIF_COLORS["cyclist"]],
-         "en": "cyclist type 3 (not spawned here)", "zh": "骑行者"},
+        {"sw": "rect", "colors": [GIF_COLORS["stopped"]],
+         "en": "latched (collision/offroad/red light)", "zh": "违规锁停"},
         {"sw": "line", "colors": [GIF_COLORS["lane"]], "en": "lane (type 1-9)", "zh": "车道"},
         {"sw": "line", "colors": [GIF_COLORS["line"]], "en": "lane marking (10-19)", "zh": "标线"},
         {"sw": "line", "colors": [GIF_COLORS["edge"]], "en": "road edge (20-29)", "zh": "边线"},
@@ -1019,6 +1006,11 @@ def _draw_swatch(d, entry, x, cy, sw, sh, small_font):
     ink = (40, 40, 40)
     if kind == "rect":
         d.rectangle([x, cy - sh // 2, x + sw, cy + sh // 2], fill=colors[0], outline=ink, width=1)
+    elif kind == "diamond":
+        r = sh * 0.9
+        dcx = x + sw / 2
+        d.polygon([(dcx, cy - r), (dcx + r, cy), (dcx, cy + r), (dcx - r, cy)],
+                  fill=colors[0], outline=ink)
     elif kind == "palette":
         step = sw / len(colors)
         for i, c in enumerate(colors):
@@ -1045,8 +1037,8 @@ def _draw_swatch(d, entry, x, cy, sw, sh, small_font):
 
 
 def draw_legend(img, entries, font_px=18, cjk_path=None):
-    """Fixed top-left legend box. Returns (img, bottom_row_y) so callouts can
-    avoid covering it."""
+    """Draw the legend box at (8, 8) onto ``img``. Returns (img, box_w, box_h)
+    so render_legend_png can crop a standalone legend image tightly."""
     font = _load_font(font_px, cjk_path)
     small = _load_font(max(font_px - 4, 8), cjk_path)
     d = ImageDraw.Draw(img)
@@ -1068,65 +1060,89 @@ def draw_legend(img, entries, font_px=18, cjk_path=None):
         _draw_swatch(d, entry, 8 + pad, cy, sw_w, sw_h, small)
         d.text((8 + pad + sw_w + pad // 2, cy - font_px // 2 - 1), text, fill=(0, 0, 0), font=font)
         ty += line_h
-    return img, 8 + box_h
+    return img, box_w, box_h
 
 
-def viz_axes_transform(map_corners):
-    """World→pixel mapping of plot_simulator_state output images.
-
-    Reproduces viz.py exactly: _get_bounds uses center ± max_half_span*1.02,
-    and the axes box is subplots_adjust(left=0.01, bottom=0.02, right=1.00,
-    top=0.96) shrunk to a square by aspect('equal', adjustable='box'),
-    anchored center. Returns ((origin_x, origin_y_top, side_px), world_bounds).
-    """
+def map_window(map_corners):
+    """Full-map camera; reproduces the previous viz.py bounds (_get_bounds:
+    center ± max_half_span*1.02) so the whole map fills the frame once."""
     c0, c1, c2, c3 = map_corners[:4]
-    cx, cy = (c0 + c2) / 2, (c1 + c3) / 2
-    radius = max(c2 - c0, c3 - c1) / 2 * 1.02
-    bounds = (cx - radius, cy - radius, cx + radius, cy + radius)  # x_min, y_min, x_max, y_max
-    ax_x0, ax_w = 0.01 * VIZ_FIG_PX, (1.00 - 0.01) * VIZ_FIG_PX
-    ax_y0, ax_h = 0.02 * VIZ_FIG_PX, (0.96 - 0.02) * VIZ_FIG_PX
-    side = min(ax_w, ax_h)
-    origin_x = ax_x0 + (ax_w - side) / 2
-    origin_y_top = VIZ_FIG_PX - (ax_y0 + (ax_h - side) / 2 + side)  # image rows grow downward
-    return (origin_x, origin_y_top, side), bounds
+    center = ((c0 + c2) / 2.0, (c1 + c3) / 2.0)
+    return center, max(c2 - c0, c3 - c1) * 1.02
 
 
-def viz_world_to_px(x, y, xform):
-    (ox, oy, side), (x_min, y_min, x_max, y_max) = xform
-    return (ox + (x - x_min) / (x_max - x_min) * side,
-            oy + (y_max - y) / (y_max - y_min) * side)
+def full_map_world_to_px(map_corners):
+    """world→px callable for FULL_MAP_PX renders produced via map_window."""
+    center, window_m = map_window(map_corners)
+    scale = FULL_MAP_PX / window_m
+    return lambda x, y: _world_to_px(x, y, center, scale, FULL_MAP_PX)
 
 
-def overlay_hazards_on_viz(pil, placed, map_corners):
-    """Re-tint the static slots viz draws uniformly as inactive gray (#808080):
-    oriented box in class color where it is ≥6 px long, plus a fixed-size
-    class marker (diamond for cones, disc otherwise) so 0.5 m cones remain
-    visible at full-map scale."""
-    d = ImageDraw.Draw(pil)
-    xform = viz_axes_transform(map_corners)
-    (_, _, side), (x_min, _, x_max, _) = xform
-    px_per_m = side / (x_max - x_min)
-    for e in placed:
-        color = HAZARD_CLASS_COLORS[e["kind"]]
-        if e["length"] * px_per_m >= 6.0:
-            corners = [viz_world_to_px(cx, cy, xform) for cx, cy in obb_corners(
-                e["x"], e["y"], e["heading"], e["length"], e["width"])]
-            d.polygon(corners, fill=color, outline=(0, 0, 0), width=2)
-        cx, cy = viz_world_to_px(e["x"], e["y"], xform)
-        r = VIZ_MARK_R_PX
-        if e["kind"] == "cone":  # diamond marker distinguishes 0.5 m cones from cars
-            d.polygon([(cx, cy - r), (cx + r, cy), (cx, cy + r), (cx - r, cy)],
-                      fill=color, outline=(0, 0, 0), width=2)
-        else:
-            d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color, outline=(0, 0, 0), width=2)
-    return pil
+def render_full_map(step, agent_f32, agent_i32, road_elements, traffic_elements,
+                    sdc_row, map_corners, dt, seed, map_name, mode_label,
+                    static_indices=None, static_class_of=None):
+    """Whole-map keyframe from the shared pillow renderer (class coloring,
+    forced >=12 px cone diamonds)."""
+    center, window_m = map_window(map_corners)
+    return render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements,
+                            sdc_row, center, window_m, FULL_MAP_PX, dt, seed, map_name,
+                            mode_label=mode_label, static_indices=static_indices,
+                            static_class_of=static_class_of)
 
 
-def add_hazard_callouts(pil, placed, map_corners, cjk_path=None, min_y=0):
+def render_legend_png(path, mode, cjk_path=None):
+    """Standalone legend image (owner acceptance: the legend must not overlap
+    the map). Measure on a probe canvas, then re-draw on a tight white crop."""
+    entries = legend_entries(mode)
+    probe = Image.new("RGB", (1400, 1000), "white")
+    _, box_w, box_h = draw_legend(probe, entries, font_px=20, cjk_path=cjk_path)
+    img = Image.new("RGB", (box_w + 20, box_h + 20), "white")
+    draw_legend(img, entries, font_px=20, cjk_path=cjk_path)
+    img.save(path)
+
+
+def _hex_to_rgb(hex_color):
+    h = hex_color.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+CONE_RGB = _hex_to_rgb(HAZARD_CLASS_COLORS["cone"])
+
+
+def count_color_pixels(png_path, rgb):
+    arr = np.asarray(Image.open(png_path).convert("RGB"))
+    return int(np.sum(np.all(arr == np.asarray(rgb, np.uint8), axis=-1)))
+
+
+def audit_cone_pixels(seed_dir, rel_paths):
+    """Owner acceptance gate: every image that should show cones must contain
+    cone-orange pixels (the forced >=12 px diamonds make a zero count
+    impossible unless the marker regressed). Any zero count fails the run."""
+    counts, failed = {}, []
+    for rel in rel_paths:
+        n = count_color_pixels(Path(seed_dir) / rel, CONE_RGB)
+        counts[str(rel)] = int(n)
+        if n == 0:
+            failed.append(str(rel))
+    if failed:
+        raise RuntimeError(f"cone pixel audit failed — 0 cone-colored px in: {failed}")
+    return counts
+
+
+def hazards_in_window(placed, center, window_m):
+    """Hazards whose center falls inside the square world window; zoom callouts
+    only tag these, so off-window hazards don't smear text at the frame edge."""
+    half = window_m / 2.0
+    x0, x1 = center[0] - half, center[0] + half
+    y0, y1 = center[1] - half, center[1] + half
+    return [e for e in placed if x0 <= e["x"] <= x1 and y0 <= e["y"] <= y1]
+
+
+def add_hazard_callouts(pil, placed, world_to_px, cjk_path=None, min_y=0):
     """English text tags ("parked"/"cluster"/"cones", + CJK when a font was
-    detected) with leader arrows on every hazard; hazard side only."""
+    detected) with leader arrows on every hazard; hazard side only.
+    ``world_to_px`` maps world coords into the given image (full map or zoom)."""
     d = ImageDraw.Draw(pil)
-    xform = viz_axes_transform(map_corners)
     w, h = pil.size
     font = _load_font(18, cjk_path)
     groups = []  # (class, world_x, world_y): each parked car, cluster/zone centers
@@ -1142,7 +1158,7 @@ def add_hazard_callouts(pil, placed, map_corners, cjk_path=None, min_y=0):
         groups.append((kind, float(np.mean([p[0] for p in pts])),
                        float(np.mean([p[1] for p in pts]))))
     for kind, wx, wy in groups:
-        cx, cy = viz_world_to_px(wx, wy, xform)
+        cx, cy = world_to_px(wx, wy)
         tx = min(cx + 26, w - 120)
         ty = max(min(cy - 26, h - 40), min_y + 8)
         d.line([(tx, ty), (cx, cy)], fill=(0, 0, 0), width=2)
@@ -1161,43 +1177,9 @@ def add_hazard_callouts(pil, placed, map_corners, cjk_path=None, min_y=0):
     return pil
 
 
-def render_viz_frame(scenario, step, mode, placed=None, map_corners=None,
-                     callouts=False, cjk_path=None):
-    """viz.plot_simulator_state + legend (+ hazard re-tint/callouts)."""
-    import pufferlib.viz as viz
-    img = viz.plot_simulator_state(scenario, step)
-    if img.shape[:2] != (VIZ_FIG_PX, VIZ_FIG_PX):
-        raise RuntimeError(
-            f"viz render is {img.shape[:2]}, expected {(VIZ_FIG_PX, VIZ_FIG_PX)}; "
-            "the world→px overlay transform must be re-derived")
-    pil = Image.fromarray(img)
-    pil, legend_bottom = draw_legend(pil, viz_legend_entries(mode), font_px=20, cjk_path=cjk_path)
-    if placed:
-        pil = overlay_hazards_on_viz(pil, placed, map_corners)
-        if callouts:
-            pil = add_hazard_callouts(pil, placed, map_corners, cjk_path, min_y=legend_bottom)
-    return pil
-
-
 def _ensure_image(src):
     """Callers pass either a path or an already-rendered PIL frame."""
     return src if isinstance(src, Image.Image) else Image.open(src)
-
-
-def crop_world(png_path, map_corners, center, window_m):
-    """Crop a square world-space window out of a viz.plot_simulator_state PNG."""
-    img = np.asarray(_ensure_image(png_path))
-    h, w = img.shape[:2]
-    cx = (map_corners[0] + map_corners[2]) / 2
-    cy = (map_corners[1] + map_corners[3]) / 2
-    radius = max(map_corners[2] - map_corners[0], map_corners[3] - map_corners[1]) / 2 * 1.02
-    x_min, x_max, y_min, y_max = cx - radius, cx + radius, cy - radius, cy + radius
-    half = window_m / 2
-    px0 = int(np.clip((center[0] - half - x_min) / (x_max - x_min) * w, 0, w - 2))
-    px1 = int(np.clip((center[0] + half - x_min) / (x_max - x_min) * w, px0 + 2, w))
-    py0 = int(np.clip((y_max - (center[1] + half)) / (y_max - y_min) * h, 0, h - 2))
-    py1 = int(np.clip((y_max - (center[1] - half)) / (y_max - y_min) * h, py0 + 2, h))
-    return Image.fromarray(img[py0:py1, px0:px1])
 
 
 def side_by_side(left_png, right_png, out_path, labels=("baseline", "static-hazards")):
@@ -1305,6 +1287,7 @@ def run_static_hazards(args, map_bin):
     print(f"[hazard-demo] legality: {legality}")
 
     static_indices = [e["idx"] for e in placed]
+    static_class_of = {e["idx"]: e["kind"] for e in placed}
     zone_centers = {}
     for e in placed:
         key = e.get("cluster_id") or e.get("zone_id")
@@ -1312,21 +1295,21 @@ def run_static_hazards(args, map_bin):
             zone_centers.setdefault(key, []).append((e["x"], e["y"]))
 
     keyframe_paths = []
-    annotated_frames = {}  # COMPARE_KEYFRAMES step -> hazard frame with text callouts
+    zoom_snaps = {}  # COMPARE_KEYFRAMES step -> (agent_f32, agent_i32) copies for true-scale zooms
     episode_end = None
     gif_frames = []
     collision_curve = []  # cumulative latched-collision agent count per step
 
     def render_keyframes(step):
-        scenario = env.get_state()[0]
-        pil = render_viz_frame(scenario, step, "static-hazards", placed=placed,
-                               map_corners=map_corners, cjk_path=cjk_font)
+        pil = render_full_map(step, af0, ai0, road_elements, traffic_elements, sdc_row,
+                              map_corners, args.dt, args.seed, map_bin.stem,
+                              "static-hazards", static_indices=static_indices,
+                              static_class_of=static_class_of)
         path = hazard_dir / f"env0_t{step:03d}.png"
         pil.save(path)
         keyframe_paths.append(str(path.relative_to(seed_dir)))
-        if step in COMPARE_KEYFRAMES:  # callouts go to compare/zoom only, not keyframes
-            annotated_frames[step] = add_hazard_callouts(
-                pil.copy(), placed, map_corners, cjk_font)
+        if step in COMPARE_KEYFRAMES:  # snapshots for true-scale zoom re-renders
+            zoom_snaps[step] = (af0.copy(), ai0.copy())
 
     af0, ai0, mf0 = buffers["agent_f32"][0], buffers["agent_i32"][0], buffers["metrics_f32"][0]
     mask0 = env_active_mask(ai0)
@@ -1362,14 +1345,11 @@ def run_static_hazards(args, map_bin):
     env.close()
 
     gif_path = seed_dir / "hazard" / "hazard.gif"
-    static_class_of = {e["idx"]: e["kind"] for e in placed}
     gif_imgs = [
         render_gif_frame(step, af, ai, road_elements, traffic_elements, sdc_row,
                          center, HAZARD_GIF_WINDOW_M, 900, args.dt, args.seed,
                          map_bin.stem, mode_label="static-hazards",
-                         static_indices=static_indices, static_class_of=static_class_of,
-                         legend_entries=gif_legend_entries("static-hazards"),
-                         cjk_path=cjk_font)
+                         static_indices=static_indices, static_class_of=static_class_of)
         for step, af, ai in gif_frames
     ]
     if gif_imgs:
@@ -1382,8 +1362,10 @@ def run_static_hazards(args, map_bin):
     scenarios_b = env_b.get_state()
     buffers_b = capture_buffers(env_b, scenarios_b)
     baseline_keyframes = []
+    baseline_snaps = {}  # COMPARE_KEYFRAMES step -> buffer copies for zoom re-renders
     baseline_end = None
     baseline_curve = []
+    sdc_row_b = int((scenarios_b[0].get("active_agent_indices") or [0])[0])
 
     def capture_b():
         env_b.get_obs_html_frame(
@@ -1396,11 +1378,13 @@ def run_static_hazards(args, map_bin):
     abf, abi, amf = buffers_b["agent_f32"][0], buffers_b["agent_i32"][0], buffers_b["metrics_f32"][0]
 
     def render_keyframes_b(step):
-        scenario = env_b.get_state()[0]
-        pil = render_viz_frame(scenario, step, "baseline", cjk_path=cjk_font)
+        pil = render_full_map(step, abf, abi, road_elements, traffic_elements,
+                              sdc_row_b, map_corners, args.dt, args.seed, map_bin.stem,
+                              "baseline")
         path = baseline_dir / f"env0_t{step:03d}.png"
         pil.save(path)
         baseline_keyframes.append(str(path.relative_to(seed_dir)))
+        baseline_snaps[step] = (abf.copy(), abi.copy())
 
     render_keyframes_b(0)
     for step in range(1, args.steps + 1):
@@ -1427,28 +1411,55 @@ def run_static_hazards(args, map_bin):
     missing = []
     for t in COMPARE_KEYFRAMES:
         b_png = baseline_dir / f"env0_t{t:03d}.png"
-        h_frame = annotated_frames.get(t)
-        if b_png.is_file() and h_frame is not None:
-            # right panel already carries hazard class colors + text callouts
-            side_by_side(b_png, h_frame, compare_dir / f"compare_t{t:03d}.png")
+        h_png = hazard_dir / f"env0_t{t:03d}.png"
+        if b_png.is_file() and h_png.is_file():
+            # right panel: class-colored full map + text callouts (hazard side only)
+            h_annot = add_hazard_callouts(Image.open(h_png), placed,
+                                          full_map_world_to_px(map_corners), cjk_font)
+            side_by_side(b_png, h_annot, compare_dir / f"compare_t{t:03d}.png")
         else:
             missing.append(t)
     zooms = []
+    zoom_cone_paths = []  # zooms of cone zones: subject to the cone pixel audit
+    cone_zone_keys = {e.get("zone_id") for e in placed if e["kind"] == "cone"}
     for key, pts in zone_centers.items():
-        ctr = tuple(np.mean(np.array(pts), axis=0))
+        ctr = (float(np.mean([p[0] for p in pts])), float(np.mean([p[1] for p in pts])))
+        zoom_w2p = lambda x, y, ctr=ctr: _world_to_px(
+            x, y, ctr, ZOOM_PX / ZOOM_WINDOW_M, ZOOM_PX)
         for t in (0, 40):
-            b_png = baseline_dir / f"env0_t{t:03d}.png"
-            h_frame = annotated_frames.get(t)
-            if b_png.is_file() and h_frame is not None:
-                b_crop = compare_dir / f"_b_{key}_t{t:03d}.png"
-                h_crop = compare_dir / f"_h_{key}_t{t:03d}.png"
-                crop_world(b_png, map_corners, ctr, ZOOM_WINDOW_M).save(b_crop)
-                crop_world(h_frame, map_corners, ctr, ZOOM_WINDOW_M).save(h_crop)
-                zoom_name = f"zoom_{key}_t{t:03d}.png"
-                side_by_side(b_crop, h_crop, compare_dir / zoom_name)
-                b_crop.unlink()
-                h_crop.unlink()
-                zooms.append(f"compare/{zoom_name}")
+            if t not in zoom_snaps or t not in baseline_snaps:
+                continue
+            # true-scale zooms re-rendered from snapshots: cones at real size
+            # (min_cone_px=0), not the forced full-map diamond
+            b_img = render_gif_frame(t, baseline_snaps[t][0], baseline_snaps[t][1],
+                                     road_elements, traffic_elements, sdc_row_b,
+                                     ctr, ZOOM_WINDOW_M, ZOOM_PX, args.dt, args.seed,
+                                     map_bin.stem, mode_label="baseline", min_cone_px=0)
+            h_img = render_gif_frame(t, zoom_snaps[t][0], zoom_snaps[t][1],
+                                     road_elements, traffic_elements, sdc_row,
+                                     ctr, ZOOM_WINDOW_M, ZOOM_PX, args.dt, args.seed,
+                                     map_bin.stem, mode_label="static-hazards",
+                                     static_indices=static_indices,
+                                     static_class_of=static_class_of, min_cone_px=0)
+            h_img = add_hazard_callouts(h_img, hazards_in_window(placed, ctr, ZOOM_WINDOW_M),
+                                        zoom_w2p, cjk_font)
+            zoom_name = f"zoom_{key}_t{t:03d}.png"
+            side_by_side(b_img, h_img, compare_dir / zoom_name)
+            zooms.append(f"compare/{zoom_name}")
+            if key in cone_zone_keys:
+                zoom_cone_paths.append(f"compare/{zoom_name}")
+
+    # pixel-existence audit: every image that should show cones must contain
+    # cone-orange pixels (hazard keyframes + compares + cone-zone zooms; the
+    # other zooms target collided clusters and legitimately have no cones);
+    # any 0 -> fail
+    audit_paths = (list(keyframe_paths)
+                   + [f"compare/compare_t{t:03d}.png" for t in COMPARE_KEYFRAMES
+                      if t not in missing]
+                   + zoom_cone_paths)
+    cone_audit = audit_cone_pixels(seed_dir, audit_paths)
+    print(f"[hazard-demo] cone pixel audit: {len(cone_audit)} images, "
+          f"min count {min(cone_audit.values()) if cone_audit else 0}")
 
     window = min(hazard_metrics["steps_run"], baseline_metrics["steps_run"])
     coll_h = collision_curve[window - 1] if window else 0
@@ -1479,9 +1490,12 @@ def run_static_hazards(args, map_bin):
         "静态 hazard 走 cosim_partner_slots 静态槽 + set_agent_states/set_agent_sizes 放置，零内核改动。",
         "binding 限制：vec_set_agent_states/sizes 只写 vec->envs[0]（cosim 单 env 假设）→ 本模式固定 --envs 1。",
         "同 seed 保证相同地图与初始撒车布局；hazard 引入后微观轨迹自然分叉（碰撞/绕行）。",
-        "图例：所有 PNG/GIF 左上角，逐项对应实际渲染（PNG=pufferlib/viz.py 语义，GIF=脚本渲染器语义，含斑马线）。",
-        "hazard 三类配色：深蓝 parked、暗红碰撞簇（重叠有意）、橙色锥桶（全图以菱形标记保证可见）；"
-        "compare/zoom 的 hazard 侧另有文字+箭头指认，baseline 侧无标注。",
+        "图例：单独成图 legend.png（index.html 首项），逐项对应脚本渲染器；渲染帧内无图例框，"
+        "仅右上角一行 legend: see legend.png 小字。全图/跟车 GIF 统一类别着色"
+        "（SDC=红、车=蓝、锁停=灰），不再按 agent id 彩虹取色。",
+        "hazard 三类配色：深蓝 parked、暗红碰撞簇（重叠有意）、橙色锥桶（全图强制 ≥12px 菱形，"
+        "zoom 按真实尺度）；compare/zoom 的 hazard 侧另有文字+箭头指认，baseline 侧无标注；"
+        "render_audit.cone_pixel_counts 逐图审计锥桶像素，任何一张为 0 即运行失败。",
         "碰撞簇内部重叠是有意的；簇整体与其他 agent/edge 无重叠（OBB SAT + 内核 lane 关联双重校验）。",
         "lane 宽度 map bin 未暴露，横向偏移按 carla 默认 3.5m 假设；内核 current_lane_idx != -1 为在道证据。",
         "kernel_lane_assoc_failures 口径：贴边锥桶（box 跨 road edge 或超 3×width=1.5m 关联半径）在内核"
@@ -1499,6 +1513,14 @@ def run_static_hazards(args, map_bin):
         "placement": placement,
         "legality": legality,
         "simulation": sim,
+        "render_audit": {
+            "cone_color_rgb": list(CONE_RGB),
+            "cone_min_diam_px_full_map": CONE_MIN_DIAM_PX,
+            "zoom_cone_scale": "true size (min_cone_px=0)",
+            "cone_pixel_counts": cone_audit,
+            "images_checked": len(cone_audit),
+            "all_nonzero": True,
+        },
         "artifacts": {
             "baseline_keyframes": baseline_keyframes,
             "hazard_keyframes": keyframe_paths,
@@ -1519,19 +1541,22 @@ def run_static_hazards(args, map_bin):
             seed_summaries.append(json.loads(d.read_text(encoding="utf-8")))
         except (json.JSONDecodeError, OSError):
             pass
-    write_root_artifacts(root, seed_summaries)
+    write_root_artifacts(root, seed_summaries, cjk_path=cjk_font)
     print(f"[hazard-demo] artifacts -> {root} ({seed_summary['runtime_s']}s); "
           f"collision rate change vs baseline @t={window}: {sim['collision_rate_change_pct']}%")
 
 
-def write_root_artifacts(root, seed_summaries):
-    """Aggregate counts_histogram.png / summary.json / index.html over seed dirs."""
+def write_root_artifacts(root, seed_summaries, cjk_path=None):
+    """Aggregate legend.png / counts_histogram.png / summary.json / index.html over seed dirs."""
+    render_legend_png(root / "legend.png", "static-hazards", cjk_path=cjk_path)
     agg = {
         "mode": "static-hazards",
         "seeds": [s["seed"] for s in seed_summaries],
         "per_seed": [
             {"seed": s["seed"], "placement": s["placement"], "legality": s["legality"],
-             "simulation": s["simulation"]}
+             "simulation": s["simulation"],
+             "render_audit": {"images_checked": s.get("render_audit", {}).get("images_checked", 0),
+                              "all_nonzero": s.get("render_audit", {}).get("all_nonzero", False)}}
             for s in sorted(seed_summaries, key=lambda x: x["seed"])
         ],
         "notes": (seed_summaries[-1].get("notes") if seed_summaries else []),
@@ -1584,15 +1609,21 @@ def write_root_artifacts(root, seed_summaries):
 </style></head><body>
   <h1>M1 static hazards · parked / collided clusters / construction cones</h1>
   <p>命令: <code>PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py --mode static-hazards --seed &lt;42|43|44&gt;</code></p>
+  <h2>图例（legend.png 单独成图，渲染帧内无图例框）</h2>
+  <img src="legend.png" width="460"/>
   <img src="counts_histogram.png" width="560"/>
   <h2>图例（与渲染逐项对应）</h2>
   <ul>
-    <li>hazard 三类：<span style="color:#0D1F8C"><b>■ parked（深蓝）</b></span> ·
+    <li>本页首项 legend.png 为完整图例，逐项对应脚本渲染器；所有渲染帧内不再画图例框，
+        仅右上角一行小字 “legend: see legend.png”。</li>
+    <li>全图 PNG 与跟车 GIF 统一类别着色（不按 agent id 彩虹取色）：SDC=红、普通车=蓝、违规锁停=灰、
+        <span style="color:#0D1F8C"><b>■ parked（深蓝）</b></span> ·
         <span style="color:#8B0000"><b>■ 碰撞簇 cluster（暗红，重叠有意）</b></span> ·
-        <span style="color:#FF8C00"><b>◆ 锥桶 cones（橙，全图以菱形标记）</b></span>；每张 PNG/GIF 左上角有完整图例框。</li>
-    <li>车辆（PNG=viz 语义）：18 色板按 agent id；违规锁停=纯红；目标=同色点 + 2 m 虚线圆环；
-        信号灯停止线=红/黄/绿/灰；停车牌=黑+红虚线；车道浅灰、标线灰虚线、边线黑。</li>
-    <li>GIF 另有：SDC=红、锁停=灰、斑马线浅绿；compare/zoom 的 hazard 侧带文字+箭头标注，baseline 侧无标注。</li>
+        <span style="color:#FF8C00"><b>◆ 锥桶 cones（橙菱形，全图强制 ≥12px，zoom 按真实尺度）</b></span>；
+        车道浅灰、标线灰、边线深灰、斑马线浅绿、停止线按红/黄/绿/灰状态。</li>
+    <li>行人/骑行者本轮不 spawn（gigaflow 仅 type-1 车辆），图例不列条目（M2 启用时再补）。</li>
+    <li>像素审计：summary.json 的 render_audit.cone_pixel_counts 逐图统计锥桶色像素，
+        任何一张为 0 即运行失败；compare/zoom 的 hazard 侧带文字+箭头标注，baseline 侧无标注。</li>
   </ul>
   <h2>放置计数 / 合法性 / 碰撞率变化</h2>
   <table><tr><th>seed</th><th>parked</th><th>collided</th><th>cone zones</th><th>rejects</th><th>legality</th><th>collision agents (baseline→hazard)</th></tr>
@@ -1656,13 +1687,12 @@ def main():
         for e in range(env.num_envs):
             if episode_end[e] is not None:
                 continue  # episode already auto-reset; the snapshot would show a new episode
-            scenario = env.get_state()[e]
-            pil = render_viz_frame(scenario, step, "baseline", cjk_path=cjk_font)
+            pil = render_full_map(step, buffers["agent_f32"][e], buffers["agent_i32"][e],
+                                  road_elements, traffic_elements, sdc_rows[e],
+                                  map_corners, args.dt, args.seed, map_bin.stem, "baseline")
             path = frames_dir / f"env{e}_t{step:03d}.png"
             pil.save(path)
             keyframe_paths[e].append(str(path.relative_to(out_dir)))
-
-    import pufferlib.viz as viz  # upstream renderer for keyframes (via render_viz_frame)
 
     keyframe_paths = {e: [] for e in range(env.num_envs)}
     capture_frame()
@@ -1712,12 +1742,12 @@ def main():
     t_loop = time.time()
 
     # --- assemble artifacts ---
+    render_legend_png(out_dir / "legend.png", "baseline", cjk_path=cjk_font)
     gif_path = "baseline.gif"
     gif_imgs = [
         render_gif_frame(
             step, af, ai, road_elements, traffic_elements, sdc_rows[gif_env],
             center, args.gif_window_m, 900, args.dt, args.seed, map_bin.stem,
-            legend_entries=gif_legend_entries("baseline"), cjk_path=cjk_font,
         )
         for step, af, ai in gif_frames
     ]

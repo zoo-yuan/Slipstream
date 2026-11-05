@@ -1,0 +1,38 @@
+# M3 hazard-demo 配置面（wayfinder 票 07：原型级 Python 侧旋钮）。
+# 驱动 `scripts/hazard_demo.py --mode mix` 的放置逻辑；env init 前经
+# validate_hazard_config() fail-fast 校验（范围/类型/概率界外立即报错）。
+# 边界声明：本文件只是原型旋钮面——真正的内核子系统（C reset 内生放置、
+# PEDESTRIAN type、per-agent IDM）属下一阶段规格票，不在此配置、不碰内核。
+# 回归契约：enable: false（全部类型禁用）时 mix 退化 为纯 gigaflow，与
+# baseline 逐位一致（tests/test_hazard_demo.py 有小规模逐位测试）。
+
+enable: true                  # 总开关：false = 全部类型禁用，回到纯 gigaflow
+
+parked:                       # 路侧停车（M1 静态槽，kerbside 半占道）
+  enable: true
+  n_range: [6, 10]            # 放置辆数区间（含端点）
+  sizes: [car, bus, truck]    # 尺寸集（car/bus/truck，见 VEHICLE_PRESETS）
+  size_weights: [0.6, 0.2, 0.2]  # 与 sizes 对齐的抽签权重，和为 1；省略 = 均匀
+
+clusters:                     # 碰撞簇（M1 静态槽；簇内交叠是有意的）
+  enable: true
+  n_range: [1, 2]             # 簇数区间（每簇 2 辆交叠车）
+  layouts: [rear_end, t_bone] # 布局集（非空子集）
+
+cones:                        # 施工锥桶（M1 静态槽，taper 渐缩 / block 封道）
+  enable: true
+  zones_range: [1, 2]         # 施工区数区间
+  taper_cones: 8              # taper 每区锥数（>=2）
+  block_rows: 2               # block 布局行数（>=1）
+  block_cols: 7               # block 布局每行锥数（>=2）
+  spacing_m: 1.5              # 锥间距（米，>0）
+  taper_prob: 0.5             # P(taper)，其余为 block；[0,1]
+
+jaywalker:                    # 横穿行人（M2 python 步进静态槽）
+  enable: true
+  n_range: [1, 2]             # 行人数区间
+  speed_range: [1.2, 1.6]     # 步速区间 m/s（0 < lo <= hi）
+
+cut_in:                       # cut-in 制造者（M2 python 步进静态槽）
+  enable: false               # 默认 false：M2 三 seed 全部 abandoned（有据）；
+                              # 真替代方案 = 内核 per-agent IDM 参数（下阶段规格票）

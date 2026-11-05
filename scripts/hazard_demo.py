@@ -19,6 +19,14 @@ captures the global agent state every step, and renders top-down artifacts:
   mid-block; metrics cover crossing completion, min distance to traffic and
   "obvious slowdown" reactions (same-seed baseline comparison); walker-magenta
   pixels are audited with the same hard-fail mechanism as cones
+- M3 ``mix``: config-driven (``config/hazard_demo.yaml``, override with
+  ``--hazard-config``) — every class the config enables shares ONE episode
+  (static slots placed once, walkers/cut-in stepped per step), fail-fast
+  validated before env init; ``enable: false`` degenerates to pure gigaflow
+  (bit-identical to baseline — the M3 regression contract). Prototype boundary:
+  the knobs drive the demo's co-sim placement only; the real kernel subsystems
+  (C reset placement, PEDESTRIAN type, per-agent IDM) belong to the next-phase
+  spec ticket. M0/M1/M2 modes keep their frozen hardcoded behavior.
 
 Usage:
     PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py \
@@ -27,6 +35,8 @@ Usage:
         --mode static-hazards --seed 42   # M1: parked/collided-cluster/cones
     PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py \
         --mode jaywalker --seed 42        # M2: python-stepped crossing + reactions
+    PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py \
+        --mode mix --seed 42              # M3: all config-enabled classes in one scene
 
 Notes (see .wayfinder/research/log-to-map-findings.md):
 - Pure-map bins carry no log agents; gigaflow replaces them with procedurally
@@ -77,13 +87,17 @@ DEFAULT_MAP = "Town05"
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="M0/M1/M2 hazard visualization pipeline")
-    p.add_argument("--mode", choices=["baseline", "static-hazards", "jaywalker"], default="baseline",
-                   help="demo mode: baseline / static-hazards (M1) / jaywalker (M2)")
+    p = argparse.ArgumentParser(description="M0/M1/M2/M3 hazard visualization pipeline")
+    p.add_argument("--mode", choices=["baseline", "static-hazards", "jaywalker", "mix"], default="baseline",
+                   help="demo mode: baseline / static-hazards (M1) / jaywalker (M2) / mix (M3 config-driven)")
     p.add_argument("--hazard-slots", type=int, default=48,
-                   help="static co-sim partner slots reserved for M1 hazards (static-hazards only)")
-    p.add_argument("--walkers", type=int, default=2,
-                   help="jaywalker walkers placed per seed (jaywalker only)")
+                   help="static co-sim partner slots reserved for M1 hazards "
+                        "(static-hazards only; mix derives its capacity from the hazard config)")
+    p.add_argument("--walkers", type=int, default=None,
+                   help="jaywalker walkers placed per seed (jaywalker only, default 2; "
+                        "--mode mix reads the count from hazard config jaywalker.n_range)")
+    p.add_argument("--hazard-config", default=None,
+                   help="hazard config YAML for --mode mix (default: config/hazard_demo.yaml)")
     p.add_argument("--skip-cut-in", action="store_true",
                    help="jaywalker only: do not attempt the scripted cut-in vehicle")
     p.add_argument("--seed", type=int, default=42)
@@ -563,6 +577,221 @@ REJECT_REASONS = (
 )
 
 
+# --- M3 hazard config face (prototype knobs, Python side) --------------------
+#
+# Ticket 07 M3: the hazard knobs move into config/hazard_demo.yaml and are
+# fail-fast validated BEFORE the env is built (mirrors the kernel trust
+# boundary: validate external config before init). Prototype boundary: these
+# knobs drive the demo's co-sim placement logic only (--mode mix); the real
+# kernel subsystems (C reset placement, PEDESTRIAN type, per-agent IDM) belong
+# to the next-phase spec ticket. The static-hazards / jaywalker modes keep
+# their frozen M1/M2 hardcoded behavior; defaults below reproduce exactly
+# those numbers so the config face can never silently rewrite prior modes.
+
+DEFAULT_HAZARD_CONFIG_PATH = "config/hazard_demo.yaml"
+CLUSTER_LAYOUTS = ("rear_end", "t_bone")
+
+HAZARD_CONFIG_DEFAULTS = {
+    "enable": True,
+    "parked": {"enable": True, "n_range": [6, 10],
+               "sizes": ["car", "bus", "truck"],
+               "size_weights": [0.6, 0.2, 0.2]},
+    "clusters": {"enable": True, "n_range": [1, 2],
+                 "layouts": ["rear_end", "t_bone"]},
+    "cones": {"enable": True, "zones_range": [1, 2], "taper_cones": 8,
+              "block_rows": 2, "block_cols": 7, "spacing_m": 1.5,
+              "taper_prob": 0.5},
+    "jaywalker": {"enable": True, "n_range": [1, 2], "speed_range": [1.2, 1.6]},
+    "cut_in": {"enable": False},
+}
+HAZARD_CONFIG_KEYS = {cls: set(sec) for cls, sec in HAZARD_CONFIG_DEFAULTS.items()
+                      if isinstance(sec, dict)}  # top-level 'enable' is a scalar, not a section
+
+
+class HazardConfigError(ValueError):
+    """Raised for any missing/malformed/out-of-range hazard config value."""
+
+
+def _cfg_fail(key, value, why):
+    raise HazardConfigError(f"hazard config '{key}': {why} (got {value!r})")
+
+
+def _cfg_bool(key, v):
+    if not isinstance(v, bool):
+        _cfg_fail(key, v, "must be a bool (true/false)")
+    return v
+
+
+def _cfg_int(key, v, minimum=None):
+    # bool is an int subclass in Python — reject it explicitly
+    if isinstance(v, bool) or not isinstance(v, int):
+        _cfg_fail(key, v, "must be an int")
+    if minimum is not None and v < minimum:
+        _cfg_fail(key, v, f"must be >= {minimum}")
+    return v
+
+
+def _cfg_num(key, v, minimum=None, maximum=None):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        _cfg_fail(key, v, "must be a number")
+    v = float(v)
+    if minimum is not None and v < minimum:
+        _cfg_fail(key, v, f"must be >= {minimum}")
+    if maximum is not None and v > maximum:
+        _cfg_fail(key, v, f"must be <= {maximum}")
+    return v
+
+
+def _cfg_int_range(key, v, minimum=None):
+    """[lo, hi] integer range, inclusive at both ends."""
+    if not isinstance(v, (list, tuple)) or len(v) != 2:
+        _cfg_fail(key, v, "must be a [lo, hi] pair of ints")
+    lo = _cfg_int(f"{key}[0]", v[0], minimum=minimum)
+    hi = _cfg_int(f"{key}[1]", v[1], minimum=minimum)
+    if lo > hi:
+        _cfg_fail(key, v, f"lo must be <= hi ([{lo}, {hi}])")
+    return [lo, hi]
+
+
+def _cfg_num_range(key, v):
+    """[lo, hi] number range with 0 < lo <= hi (e.g. walker speed m/s)."""
+    if not isinstance(v, (list, tuple)) or len(v) != 2:
+        _cfg_fail(key, v, "must be a [lo, hi] pair of numbers")
+    lo = _cfg_num(f"{key}[0]", v[0])
+    hi = _cfg_num(f"{key}[1]", v[1])
+    if lo <= 0:
+        _cfg_fail(key, v, f"lo must be > 0 ({lo})")
+    if lo > hi:
+        _cfg_fail(key, v, f"lo must be <= hi ([{lo}, {hi}])")
+    return [lo, hi]
+
+
+def validate_hazard_config(raw):
+    """Merge ``raw`` over the built-in defaults and fail-fast on anything
+    malformed, out of range, or of the wrong type. Returns the normalized
+    config dict (no defaults left implicit, so downstream placement code can
+    read every knob unconditionally). Independent of the kernel — unit-tested
+    in tests/test_hazard_demo.py."""
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        _cfg_fail("<root>", raw, "must be a YAML mapping")
+    unknown = sorted(set(raw) - set(HAZARD_CONFIG_DEFAULTS))
+    if unknown:
+        _cfg_fail("<root>", unknown,
+                  f"unknown key(s); allowed: {sorted(HAZARD_CONFIG_DEFAULTS)}")
+
+    def section(name):
+        sec_raw = raw.get(name, {})
+        if sec_raw is None:
+            sec_raw = {}
+        if not isinstance(sec_raw, dict):
+            _cfg_fail(name, sec_raw, "must be a mapping")
+        unknown_k = sorted(set(sec_raw) - HAZARD_CONFIG_KEYS[name])
+        if unknown_k:
+            _cfg_fail(name, unknown_k,
+                      f"unknown key(s); allowed: {sorted(HAZARD_CONFIG_KEYS[name])}")
+        merged = dict(HAZARD_CONFIG_DEFAULTS[name])
+        merged.update(sec_raw)
+        return merged, sec_raw
+
+    cfg = {"enable": _cfg_bool("enable", raw.get("enable", True))}
+
+    parked, sec_raw = section("parked")
+    parked["enable"] = _cfg_bool("parked.enable", parked["enable"])
+    parked["n_range"] = _cfg_int_range("parked.n_range", parked["n_range"], minimum=0)
+    sizes = parked["sizes"]
+    if (not isinstance(sizes, list) or not sizes
+            or any(s not in VEHICLE_PRESETS for s in sizes)):
+        _cfg_fail("parked.sizes", sizes,
+                  f"must be a non-empty subset of {sorted(VEHICLE_PRESETS)}")
+    if "sizes" in sec_raw and "size_weights" not in sec_raw:
+        parked["size_weights"] = [1.0 / len(sizes)] * len(sizes)  # uniform draw
+    w = parked["size_weights"]
+    if (not isinstance(w, list) or len(w) != len(sizes)
+            or any(isinstance(x, bool) or not isinstance(x, (int, float)) or x < 0
+                   for x in w)):
+        _cfg_fail("parked.size_weights", w,
+                  f"must be {len(sizes)} non-negative numbers aligned with sizes")
+    if abs(sum(float(x) for x in w) - 1.0) > 1e-6:
+        _cfg_fail("parked.size_weights", w,
+                  f"must sum to 1.0 (sums to {sum(float(x) for x in w)})")  # noqa: partial dup ok
+    parked["size_weights"] = [float(x) for x in w]
+    cfg["parked"] = parked
+
+    clusters, _ = section("clusters")
+    clusters["enable"] = _cfg_bool("clusters.enable", clusters["enable"])
+    clusters["n_range"] = _cfg_int_range("clusters.n_range", clusters["n_range"], minimum=0)
+    layouts = clusters["layouts"]
+    if (not isinstance(layouts, list) or not layouts
+            or any(x not in CLUSTER_LAYOUTS for x in layouts)):
+        _cfg_fail("clusters.layouts", layouts,
+                  f"must be a non-empty subset of {list(CLUSTER_LAYOUTS)}")
+    cfg["clusters"] = clusters
+
+    cones, _ = section("cones")
+    cones["enable"] = _cfg_bool("cones.enable", cones["enable"])
+    cones["zones_range"] = _cfg_int_range("cones.zones_range", cones["zones_range"], minimum=0)
+    cones["taper_cones"] = _cfg_int("cones.taper_cones", cones["taper_cones"], minimum=2)
+    cones["block_rows"] = _cfg_int("cones.block_rows", cones["block_rows"], minimum=1)
+    cones["block_cols"] = _cfg_int("cones.block_cols", cones["block_cols"], minimum=2)
+    cones["spacing_m"] = _cfg_num("cones.spacing_m", cones["spacing_m"], minimum=1e-6)
+    cones["taper_prob"] = _cfg_num("cones.taper_prob", cones["taper_prob"], minimum=0.0, maximum=1.0)
+    cfg["cones"] = cones
+
+    jw, _ = section("jaywalker")
+    jw["enable"] = _cfg_bool("jaywalker.enable", jw["enable"])
+    jw["n_range"] = _cfg_int_range("jaywalker.n_range", jw["n_range"], minimum=0)
+    jw["speed_range"] = _cfg_num_range("jaywalker.speed_range", jw["speed_range"])
+    cfg["jaywalker"] = jw
+
+    cut, _ = section("cut_in")
+    cut["enable"] = _cfg_bool("cut_in.enable", cut["enable"])
+    cfg["cut_in"] = cut
+    return cfg
+
+
+def load_hazard_config(path=None):
+    """Read + validate the hazard config YAML (init 前校验, fail-fast)."""
+    path = Path(path or DEFAULT_HAZARD_CONFIG_PATH)
+    resolved = path if path.is_absolute() else REPO_ROOT / path
+    if not resolved.is_file():
+        raise HazardConfigError(
+            f"hazard config not found: {resolved} (pass --hazard-config <yaml>)")
+    try:
+        import yaml
+    except ImportError as exc:
+        raise HazardConfigError("PyYAML is required to read the hazard config") from exc
+    try:
+        raw = yaml.safe_load(resolved.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise HazardConfigError(f"hazard config {resolved} is not valid YAML: {exc}") from exc
+    cfg = validate_hazard_config(raw)
+    cfg["_path"] = str(resolved)
+    return cfg
+
+
+def mix_slot_capacity(cfg):
+    """Upper bound of co-sim slots the config can ever consume (planned-count
+    highs; placement may use fewer, never more). All-disabled configs get 0 so
+    the mix build is byte-identical to the plain baseline build."""
+    if not cfg["enable"]:
+        return 0
+    pc, cc, kc = cfg["parked"], cfg["clusters"], cfg["cones"]
+    cap = 0
+    if pc["enable"]:
+        cap += pc["n_range"][1]
+    if cc["enable"]:
+        cap += 2 * cc["n_range"][1]
+    if kc["enable"]:
+        cap += kc["zones_range"][1] * max(kc["taper_cones"], kc["block_rows"] * kc["block_cols"])
+    if cfg["jaywalker"]["enable"]:
+        cap += cfg["jaywalker"]["n_range"][1]
+    if cfg["cut_in"]["enable"]:
+        cap += 1
+    return cap
+
+
 def hazard_rng(seed: int) -> np.random.RandomState:
     """Placement RNG, deliberately independent of the episode RNG stream."""
     return np.random.RandomState((seed * 7919 + 13) % (2 ** 31))
@@ -738,23 +967,32 @@ def pose_conflict_reason(pose, dyn, placed, edges, lane_id=None, s=None,
     return None
 
 
-def plan_hazard_counts(rng):
+def plan_hazard_counts(rng, parked_range=(6, 10), cluster_range=(1, 2), zone_range=(1, 2)):
+    """Per-class counts drawn from inclusive [lo, hi] ranges. Defaults are the
+    frozen M1 numbers; --mode mix passes the validated config ranges. Disabled
+    classes arrive as (0, 0) and draw 0 (one rng draw each — the placement RNG
+    is independent of the episode stream, so this never touches dynamics)."""
     return {
-        "parked": int(rng.randint(6, 11)),        # 6-10 per env
-        "clusters": int(rng.randint(1, 3)),       # 1-2 crash clusters
-        "cone_zones": int(rng.randint(1, 3)),     # 1-2 construction segments
+        "parked": int(rng.randint(parked_range[0], parked_range[1] + 1)),
+        "clusters": int(rng.randint(cluster_range[0], cluster_range[1] + 1)),
+        "cone_zones": int(rng.randint(zone_range[0], zone_range[1] + 1)),
     }
 
 
-def _pick_preset(rng):
-    names, probs = zip(*PARKED_SIZE_PROBS)
+def _pick_preset(rng, size_table=None):
+    table = size_table or PARKED_SIZE_PROBS
+    names = [t[0] for t in table]
+    # M1 table rows are (name, prob); M3 config tables are (name, size, weight)
+    probs = [t[-1] for t in table]
     return names[int(rng.choice(len(names), p=probs))]
 
 
-def place_parked(rng, lanes, edges, dyn, placed, rejects, count):
+def place_parked(rng, lanes, edges, dyn, placed, rejects, count, size_table=None):
+    """``size_table``: ((name, (length, width), weight), ...) — config sizes
+    set (M3 mix); None keeps the frozen M1 car/bus/truck draw."""
     placed_n = 0
     for _ in range(count):
-        vtype = _pick_preset(rng)
+        vtype = _pick_preset(rng, size_table)
         length, width = VEHICLE_PRESETS[vtype]
         entry = None
         for _attempt in range(MAX_PLACE_ATTEMPTS):
@@ -783,9 +1021,14 @@ def place_parked(rng, lanes, edges, dyn, placed, rejects, count):
     return placed_n
 
 
-def _cluster_poses(rng, lanes, lane, lenA, wA, lenB, wB):
-    """Two deliberately overlapping poses: rear-end or T-bone (per seed)."""
-    pattern = "rear_end" if rng.uniform() < 0.5 else "t_bone"
+def _cluster_poses(rng, lanes, lane, lenA, wA, lenB, wB, layouts=None):
+    """Two deliberately overlapping poses per the config layout set (M3 mix);
+    default/both layouts keep the frozen M1 uniform coin (same rng stream)."""
+    layouts = list(CLUSTER_LAYOUTS) if layouts is None else list(layouts)
+    if set(layouts) == set(CLUSTER_LAYOUTS):
+        pattern = "rear_end" if rng.uniform() < 0.5 else "t_bone"
+    else:
+        pattern = layouts[0]  # single-layout config: no coin drawn
     sA = rng.uniform(8.0, lane["total"] - 8.0)
     xA, yA, zA, hA = lanes.pose_at(lane, sA, rng.uniform(-0.2, 0.2))
     poseA = (xA, yA, hA, lenA, wA)
@@ -809,7 +1052,7 @@ def _cluster_poses(rng, lanes, lane, lenA, wA, lenB, wB):
     return pattern, poseA, (xB, yB, hB, lenB, wB), zA
 
 
-def place_clusters(rng, lanes, edges, dyn, placed, rejects, count):
+def place_clusters(rng, lanes, edges, dyn, placed, rejects, count, layouts=None):
     placed_n = 0
     for c in range(count):
         cluster_id = f"cluster{c}"
@@ -821,7 +1064,8 @@ def place_clusters(rng, lanes, edges, dyn, placed, rejects, count):
             if lane is None:
                 rejects["no_lane"] += 1
                 break
-            pattern, poseA, poseB, z = _cluster_poses(rng, lanes, lane, lenA, wA, lenB, wB)
+            pattern, poseA, poseB, z = _cluster_poses(rng, lanes, lane, lenA, wA, lenB, wB,
+                                                      layouts=layouts)
             if not obb_overlap(poseA, poseB, margin=0.0):
                 rejects["cluster_overlap_failed"] += 1
                 continue
@@ -851,20 +1095,27 @@ def place_clusters(rng, lanes, edges, dyn, placed, rejects, count):
     return placed_n
 
 
-def _cone_poses(rng, lanes, lane):
-    """Taper (diagonal narrowing) or block (full-lane closure), ~1.5 m spacing."""
-    pattern = "taper" if rng.uniform() < 0.5 else "block"
+def _cone_poses(rng, lanes, lane, cones=None):
+    """Taper (diagonal narrowing) or block (full-lane closure) at ``spacing_m``
+    intervals. ``cones`` is the validated config section (M3 mix); None keeps
+    the frozen M1 defaults: 8-cone taper / 2x7 block at 1.5 m, 50/50 patterns."""
+    taper_n = int(cones["taper_cones"]) if cones else 8
+    block_rows = int(cones["block_rows"]) if cones else 2
+    block_cols = int(cones["block_cols"]) if cones else 7
+    spacing = float(cones["spacing_m"]) if cones else 1.5
+    taper_prob = float(cones["taper_prob"]) if cones else 0.5
+    pattern = "taper" if rng.uniform() < taper_prob else "block"
     cone_l = cone_w = 0.5
     poses = []
     if pattern == "taper":
-        n = 8
-        span = (n - 1) * 1.5
+        n = taper_n
+        span = (n - 1) * spacing
         base_s = rng.uniform(4.0, max(4.1, lane["total"] - span - 4.0))
         side = 1.0 if rng.uniform() < 0.5 else -1.0
         lat0 = side * rng.uniform(0.2, 0.5)
         lat1 = side * rng.uniform(1.1, 1.4)
         for k in range(n):
-            s = base_s + k * 1.5
+            s = base_s + k * spacing
             lat = float(np.interp(k, [0, n - 1], [lat0, lat1])) + rng.uniform(-0.05, 0.05)
             x, y, z, h = lanes.pose_at(lane, s, lat)
             poses.append(((x, y, h, cone_l, cone_w), z, s, lat))
@@ -874,18 +1125,19 @@ def _cone_poses(rng, lanes, lane):
         # stays kernel-associated (on-lane evidence for the legality report)
         half_lane = min(ASSUMED_LANE_WIDTH_M / 2.0 - 0.35, 1.45)
         base_s = rng.uniform(4.0, max(4.1, lane["total"] - 9.0))
-        stagger = (2 * half_lane) / 6 / 2
-        for row in range(2):
-            lats = np.linspace(-half_lane, half_lane, 7) + (stagger if row else 0.0)
+        stagger = (2 * half_lane) / (block_cols - 1) / 2
+        for row in range(block_rows):
+            lats = np.linspace(-half_lane, half_lane, block_cols) + (stagger if row else 0.0)
             lats = np.clip(lats, -1.45, 1.45)
             for lat in lats:
-                s = base_s + row * 1.6 + rng.uniform(-0.1, 0.1)
+                # row gap = spacing + cone diameter margin (M1 default: 1.6 m)
+                s = base_s + row * (spacing + 0.1) + rng.uniform(-0.1, 0.1)
                 x, y, z, h = lanes.pose_at(lane, s, float(lat) + rng.uniform(-0.05, 0.05))
                 poses.append(((x, y, h, cone_l, cone_w), z, s, float(lat)))
     return pattern, poses
 
 
-def place_cone_zones(rng, lanes, edges, dyn, placed, rejects, count):
+def place_cone_zones(rng, lanes, edges, dyn, placed, rejects, count, cones=None):
     placed_zones, cones_placed = 0, 0
     for zi in range(count):
         zone_id = f"cones{zi}"
@@ -895,7 +1147,7 @@ def place_cone_zones(rng, lanes, edges, dyn, placed, rejects, count):
             if lane is None:
                 rejects["no_lane"] += 1
                 break
-            pattern, poses = _cone_poses(rng, lanes, lane)
+            pattern, poses = _cone_poses(rng, lanes, lane, cones=cones)
             reason = None
             for pose, _z, _s, _lat in poses:
                 reason = pose_conflict_reason(pose, dyn, placed, edges,
@@ -1060,34 +1312,42 @@ def _label(entry, cjk_path):
 
 def hazard_legend_entries():
     return [
-        {"sw": "diamond", "colors": [HAZARD_CLASS_COLORS["cone"]],
+        {"sw": "diamond", "cls": "cone", "colors": [HAZARD_CLASS_COLORS["cone"]],
          "en": "cones: construction cone (orange diamond, >=12 px full map)",
          "zh": "锥桶"},
-        {"sw": "rect", "colors": [HAZARD_CLASS_COLORS["parked"]],
+        {"sw": "rect", "cls": "parked", "colors": [HAZARD_CLASS_COLORS["parked"]],
          "en": "parked: kerbside static vehicle", "zh": "路侧停车"},
-        {"sw": "rect", "colors": [HAZARD_CLASS_COLORS["collided"]],
+        {"sw": "rect", "cls": "collided", "colors": [HAZARD_CLASS_COLORS["collided"]],
          "en": "cluster: collided pair (overlap intentional)", "zh": "碰撞簇"},
     ]
 
 
-def legend_entries(mode):
+def walker_legend_entries():
+    return [
+        {"sw": "traildot", "cls": "walker", "colors": [GIF_COLORS["walker"]],
+         "en": "walker: python-stepped jaywalker (dot + trail)", "zh": "行人（轨迹线）"},
+        {"sw": "rect", "cls": "cut_in", "colors": [HAZARD_CLASS_COLORS["cut_in"]],
+         "en": "cut-in maker: scripted merging vehicle", "zh": "cut-in 车"},
+    ]
+
+
+def legend_entries(mode, spawned=None):
     """Rows for the standalone legend.png. Mirrors render_gif_frame 1:1 (it is
     now the only renderer, so one legend covers full-map PNGs and GIF frames).
-    Categories that never spawn are NOT listed: gigaflow spawns type-1
-    vehicles only, so the baseline/static legends have no pedestrian/cyclist
-    rows (the M2 jaywalker mode adds its walker row because those agents
-    actually appear there); no goal ring / agent-id rows either (this
-    renderer draws neither)."""
+    Categories that never spawn are NOT listed (owner acceptance rule):
+    gigaflow spawns type-1 vehicles only, so the baseline/static legends have
+    no pedestrian/cyclist rows; ``spawned`` (a set of class keys) additionally
+    filters the mix-mode rows down to classes that actually spawned this run
+    (e.g. cut_in rows are omitted whenever cut_in.enable is false). No goal
+    ring / agent-id rows either (this renderer draws neither)."""
     ent = []
     if mode == "static-hazards":
         ent += hazard_legend_entries()
     if mode == "jaywalker":
-        ent += [
-            {"sw": "traildot", "colors": [GIF_COLORS["walker"]],
-             "en": "walker: python-stepped jaywalker (dot + trail)", "zh": "行人（轨迹线）"},
-            {"sw": "rect", "colors": [HAZARD_CLASS_COLORS["cut_in"]],
-             "en": "cut-in maker: scripted merging vehicle", "zh": "cut-in 车"},
-        ]
+        ent += walker_legend_entries()
+    if mode == "mix":
+        rows = hazard_legend_entries() + walker_legend_entries()
+        ent += [e for e in rows if spawned is None or e.get("cls") in spawned]
     ent += [
         {"sw": "rect", "colors": [GIF_COLORS["vehicle"]], "en": "vehicle (IDM)", "zh": "车辆"},
         {"sw": "rect", "colors": [GIF_COLORS["sdc"]], "en": "SDC (camera target)", "zh": "主车"},
@@ -1199,10 +1459,10 @@ def render_full_map(step, agent_f32, agent_i32, road_elements, traffic_elements,
                             walker_trails=walker_trails)
 
 
-def render_legend_png(path, mode, cjk_path=None):
+def render_legend_png(path, mode, cjk_path=None, spawned=None):
     """Standalone legend image (owner acceptance: the legend must not overlap
     the map). Measure on a probe canvas, then re-draw on a tight white crop."""
-    entries = legend_entries(mode)
+    entries = legend_entries(mode, spawned=spawned)
     probe = Image.new("RGB", (1400, 1000), "white")
     _, box_w, box_h = draw_legend(probe, entries, font_px=20, cjk_path=cjk_path)
     img = Image.new("RGB", (box_w + 20, box_h + 20), "white")
@@ -1791,7 +2051,7 @@ CUT_IN_MAX_TRACKING_ERR_M = 0.25
 CUT_IN_ALTERNATIVE = ("kernel per-agent IDM parameter variation (per-agent aggressiveness / "
                       "desired speed) — kernel change, out of M2 zero-kernel scope")
 WALKER_REJECT_REASONS = ("no_lane", "near_crosswalk", "edge_not_found", "edge_weird",
-                         "dynamic_overlap", "walker_spacing", "max_attempts")
+                         "dynamic_overlap", "static_overlap", "walker_spacing", "max_attempts")
 
 
 def walker_rng(seed: int) -> np.random.RandomState:
@@ -1856,13 +2116,14 @@ def _nearest_on_polyline(pts, p):
     return float(np.sqrt(best_d2)), best_p
 
 
-def plan_walkers(rng, lanes, edges, cw_segs, dyn, count):
+def plan_walkers(rng, lanes, edges, cw_segs, dyn, count, static_placed=None):
     """Mid-block crossing spots: straight lane, >=12 m from any crosswalk (the
     bin has no junction-type elements, so crosswalk distance is the
     intersection-avoidance proxy), road edges ray-cast on both sides, start
     OUTSIDE the near kerb (jaywalking is a violation by design — no off-road
-    check), but start/end poses must not overlap any dynamic vehicle (the
-    dynamic overlap check is kept)."""
+    check), but start/end poses must not overlap any dynamic vehicle (kept)
+    nor any already-placed static hazard (``static_placed``, M3 mix only —
+    None keeps the frozen M2 behavior/rng stream)."""
     placed, rejects = [], {r: 0 for r in WALKER_REJECT_REASONS}
     for k in range(count):
         entry = None
@@ -1897,6 +2158,14 @@ def plan_walkers(rng, lanes, edges, cw_segs, dyn, count):
             if any(obb_overlap(wp, d, margin=0.05) or obb_overlap(ep, d, margin=0.05)
                    for d in dyn):
                 rejects["dynamic_overlap"] += 1
+                continue
+            if static_placed and any(
+                    obb_overlap(wp, (o["x"], o["y"], o["heading"], o["length"], o["width"]),
+                                margin=0.05)
+                    or obb_overlap(ep, (o["x"], o["y"], o["heading"], o["length"], o["width"]),
+                                   margin=0.05)
+                    for o in static_placed):
+                rejects["static_overlap"] += 1
                 continue
             if any(np.linalg.norm(start - np.asarray(o["start"])) < WALKER_SPACING_M
                    for o in placed):
@@ -2114,6 +2383,8 @@ def run_jaywalker(args, map_bin):
     if args.envs != 1:
         print("[hazard-demo] jaywalker: co-sim setters only reach vec env 0; forcing --envs 1")
         args.envs = 1
+    if args.walkers is None:
+        args.walkers = 2  # frozen M2 default (mix mode reads the count from config)
     if args.walkers < 1:
         raise ValueError("--walkers must be >= 1")
 
@@ -2798,13 +3069,886 @@ def write_jaywalker_root(root, seed_summaries, cjk_path=None):
     (root / "index.html").write_text(html, encoding="utf-8")
 
 
+def run_mix(args, map_bin, cfg):
+    """M3: config-driven mix — every class enabled in the hazard config shares
+    ONE episode. Static classes (parked/collided/cones) are co-sim slots placed
+    once; jaywalker walkers and the cut-in maker are python-stepped every step
+    (same mechanisms as M1/M2). A same-seed clean baseline episode provides the
+    compare side and the reaction windows. Co-sim setters only reach vec env 0
+    -> envs=1 (forced).
+
+    Prototype boundary: the config knobs drive this demo's placement logic
+    only — no kernel change (C reset placement / PEDESTRIAN type / per-agent
+    IDM are next-phase spec-ticket scope). Regression contract: with the
+    config fully disabled the mix build reserves zero co-sim slots and places
+    nothing, so the episode is bit-identical to the pure gigaflow baseline."""
+    if args.envs != 1:
+        print("[hazard-demo] mix: co-sim setters only reach vec env 0; forcing --envs 1")
+        args.envs = 1
+    if args.walkers is not None:
+        raise SystemExit("--walkers applies to --mode jaywalker only; mix reads the "
+                         "walker count from hazard config jaywalker.n_range")
+    if args.skip_cut_in:
+        raise SystemExit("--skip-cut-in applies to --mode jaywalker only; mix reads "
+                         "cut_in.enable from the hazard config")
+
+    root = REPO_ROOT / args.out if not Path(args.out).is_absolute() else Path(args.out)
+    seed_dir = root / f"seed{args.seed}"
+    baseline_dir = seed_dir / "baseline" / "frames"
+    mix_dir = seed_dir / "mix" / "frames"
+    compare_dir = seed_dir / "compare"
+    for d in (baseline_dir, mix_dir, compare_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    t_start = time.time()
+    enabled = [k for k in ("parked", "clusters", "cones", "jaywalker", "cut_in")
+               if cfg[k]["enable"]]
+    print(f"[hazard-demo] mode=mix seed={args.seed} map={map_bin} config={cfg.get('_path')}")
+    print(f"[hazard-demo] global enable={cfg['enable']}; enabled classes: "
+          f"{enabled if cfg['enable'] else 'NONE (pure gigaflow regression run)'}")
+    cjk_font = detect_cjk_font()
+    print(f"[hazard-demo] CJK font: {cjk_font or 'none -> English-only labels (no tofu)'}")
+
+    # ---- episode 1: mix ------------------------------------------------------
+    # Capacity from the config upper bound; all-disabled -> 0 slots -> the
+    # build is byte-identical to the plain baseline build (regression gate b).
+    slots = mix_slot_capacity(cfg)
+    env = build_env(args, map_bin, cosim_partner_slots=slots)
+    env.reset(seed=args.seed)
+    scenarios = env.get_state()
+    buffers = capture_buffers(env, scenarios, extra_agent_slots=slots)
+    road_elements = scenarios[0].get("road_elements") or []
+    traffic_elements = scenarios[0].get("traffic_elements") or []
+    map_corners = scenarios[0].get("map_corners") or []
+    sdc_row = int((scenarios[0].get("active_agent_indices") or [0])[0])
+
+    def capture():
+        env.get_obs_html_frame(
+            buffers["agent_f32"], buffers["agent_i32"], buffers["metrics_f32"],
+            buffers["puffer_f32"], buffers["traffic_i16"], buffers["goals_f32"],
+            buffers["rewards_f32"], buffers["coefs_f32"],
+        )
+
+    capture()
+    af0, ai0, mf0 = buffers["agent_f32"][0], buffers["agent_i32"][0], buffers["metrics_f32"][0]
+    lanes = LaneIndex(road_elements)
+    edges = EdgeIndex(road_elements)
+    cw_segs = crosswalk_segments(road_elements)
+    dyn = dynamic_boxes(af0, ai0)
+
+    # ---- placement (config-driven) ------------------------------------------
+    rng = hazard_rng(args.seed)
+    wrng = walker_rng(args.seed)
+    rejects = {r: 0 for r in REJECT_REASONS}
+    walker_rejects = {r: 0 for r in WALKER_REJECT_REASONS}
+    placed, walkers, cut_in = [], [], None
+    plan = {"parked": 0, "clusters": 0, "cone_zones": 0}
+    walkers_planned = 0
+    if cfg["enable"]:
+        pc, cc, kc, jc = cfg["parked"], cfg["clusters"], cfg["cones"], cfg["jaywalker"]
+        plan = plan_hazard_counts(
+            rng,
+            parked_range=tuple(pc["n_range"]) if pc["enable"] else (0, 0),
+            cluster_range=tuple(cc["n_range"]) if cc["enable"] else (0, 0),
+            zone_range=tuple(kc["zones_range"]) if kc["enable"] else (0, 0),
+        )
+        size_table = None
+        if pc["enable"]:
+            size_table = tuple(zip(pc["sizes"], [VEHICLE_PRESETS[s] for s in pc["sizes"]],
+                                   pc["size_weights"]))
+        parked_n = place_parked(rng, lanes, edges, dyn, placed, rejects, plan["parked"],
+                                size_table=size_table)
+        clusters_n = place_clusters(rng, lanes, edges, dyn, placed, rejects, plan["clusters"],
+                                    layouts=cc["layouts"])
+        zones_n, cones_n = place_cone_zones(rng, lanes, edges, dyn, placed, rejects,
+                                            plan["cone_zones"], cones=kc)
+        print(f"[hazard-demo] plan={plan} placed: parked={parked_n} clusters={clusters_n} "
+              f"cone_zones={zones_n} ({cones_n} cones)")
+        if jc["enable"]:
+            walkers_planned = int(wrng.randint(jc["n_range"][0], jc["n_range"][1] + 1))
+            walkers, walker_rejects = plan_walkers(wrng, lanes, edges, cw_segs, dyn,
+                                                   walkers_planned, static_placed=placed)
+
+    for k, w in enumerate(walkers):
+        w["row"] = args.agents_per_env + len(placed) + k
+        w["speed_mps"] = float(wrng.uniform(*cfg["jaywalker"]["speed_range"]))
+        w["start_step"] = 1 + k * WALKER_START_STAGGER_STEPS
+        est = int(np.ceil(w["crossing_width_m"] / (w["speed_mps"] * args.dt)))
+        w["mid_step"] = min(w["start_step"] + max(est // 2, 1), args.steps - 1)
+        w["traveled"] = 0.0
+        w["done_step"] = None
+        w["tracking_max_err_m"] = 0.0
+    valid0 = (ai0[:, 3] == 1) & (ai0[:, 2] == 1) & (ai0[:, 5] == 0)
+    med_v = float(np.median(af0[valid0, 6])) if valid0.any() else 6.0
+    cruise = float(np.clip(med_v, *CUT_IN_CRUISE_RANGE)) if np.isfinite(med_v) else 6.0
+    if cfg["enable"] and cfg["cut_in"]["enable"]:
+        cut_in = plan_cut_in(wrng, lanes, dyn, walkers, cruise)
+    if cut_in:
+        cut_in["row"] = args.agents_per_env + len(placed) + len(walkers)
+        cut_in["merge_steps"] = int(np.ceil(cut_in["lateral_offset_m"] / CUT_IN_DLATERAL_PER_STEP))
+        cut_in["start_step"] = 1
+        cut_in["window"] = (1, min(1 + cut_in["merge_steps"] + CUT_IN_TAIL_STEPS, args.steps))
+        cut_in["tracking_max_err_m"] = 0.0
+
+    initial = placed + walkers + ([cut_in] if cut_in else [])
+    print(f"[hazard-demo] walkers={len(walkers)} "
+          f"cut_in={'yes (merge %.1f m over %d steps)' % (cut_in['lateral_offset_m'], cut_in['merge_steps']) if cut_in else 'disabled' if not cfg['cut_in']['enable'] else 'abandoned (no usable lane pair)'} "
+          f"slots={len(initial)}/{slots} cruise={cruise:.1f} m/s")
+    if cfg["enable"] and not initial:
+        raise RuntimeError("hazard config enables at least one class but nothing could be "
+                           "placed on this map/seed; check the config or pick another seed")
+    if len(initial) > slots:
+        raise RuntimeError(f"mix slots exhausted: {len(initial)} > {slots}; tighten the config ranges")
+
+    if initial:
+        apply_static_hazards(env, args, initial)
+        capture()
+    g_state = env.get_global_agent_state(include_static=True)
+    place_err = 0.0 if not initial else max(
+        max(abs(float(g_state["x"][e["idx"]]) - e["x"]),
+            abs(float(g_state["y"][e["idx"]]) - e["y"])) for e in initial)
+    post_overlap = sum(1 for e in initial
+                       if any(obb_overlap((e["x"], e["y"], e["heading"], e["length"], e["width"]),
+                                          d, margin=0.05) for d in dyn))
+    # placement-time legality (M1 semantics: checked against the fresh spawn
+    # layout at step 0, BEFORE any vehicle drives into a hazard; walkers are
+    # intentionally off-road so they stay out of the static edge/lane checks)
+    if placed:
+        legality = verify_static_hazards(env, placed, [e["idx"] for e in placed],
+                                         buffers["agent_f32"][0], buffers["agent_i32"][0])
+    else:
+        legality = {"kernel_lane_assoc_failures": 0,
+                    "kernel_lane_assoc_failures_detail": [],
+                    "dynamic_overlap_violations_postcheck": 0,
+                    "intentional_intra_cluster_overlaps": 0,
+                    "world_readback_max_err_m": 0.0,
+                    "static_agent_indices_head": []}
+    legality = {**legality,
+                "all_slots_dynamic_overlap_postcheck": int(post_overlap),
+                "world_readback_max_err_all_slots_m": round(float(place_err), 6)}
+    print(f"[hazard-demo] placement readback_err={place_err} dynamic_overlap_postcheck={post_overlap}")
+    print(f"[hazard-demo] legality: {legality}")
+
+    static_class_of = {e["idx"]: e["kind"] for e in initial}
+    static_indices = list(static_class_of)
+    walker_rows = [w["row"] for w in walkers]
+    zone_centers = {}
+    for e in placed:
+        key = e.get("cluster_id") or e.get("zone_id")
+        if key:
+            zone_centers.setdefault(key, []).append((e["x"], e["y"]))
+    trails = {w["row"]: [(float(af0[w["row"], 0]), float(af0[w["row"], 1]))] for w in walkers}
+    cut_trail = ([(float(af0[cut_in["row"], 0]), float(af0[cut_in["row"], 1]))]
+                 if cut_in else None)
+
+    per_step = []
+
+    def record_step():
+        valid = (ai0[:, 3] == 1) & (ai0[:, 2] == 1) & (ai0[:, 5] == 0)
+        per_step.append({"x": af0[:, 0].copy(), "y": af0[:, 1].copy(),
+                         "v": af0[:, 6].copy(), "valid": valid.copy(),
+                         "coll": (mf0[:, COLLISION_IDX] > 0).copy()})
+
+    record_step()
+    keyframe_paths = []
+    snap_mix = {}  # step -> buffer copies for true-scale zoom re-renders
+
+    def render_keyframes(step):
+        pil = render_full_map(step, af0, ai0, road_elements, traffic_elements, sdc_row,
+                              map_corners, args.dt, args.seed, map_bin.stem, "mix",
+                              static_indices=static_indices, static_class_of=static_class_of,
+                              walker_indices=walker_rows,
+                              walker_trails={r: np.asarray(p) for r, p in trails.items()})
+        path = mix_dir / f"env0_t{step:03d}.png"
+        pil.save(path)
+        keyframe_paths.append(str(path.relative_to(seed_dir)))
+        if step in COMPARE_KEYFRAMES or any(step == w["mid_step"] for w in walkers):
+            snap_mix[step] = (af0.copy(), ai0.copy())
+
+    actions = np.zeros((env.num_agents, 2), dtype=np.float32)
+    steps_run = 0
+    episode_end = None
+    gif_frames = []
+    collision_curve = []
+    if walkers:
+        gif_center = (walkers[0]["cross_pt"][0], walkers[0]["cross_pt"][1])
+    else:
+        mask0 = env_active_mask(ai0)
+        gif_center = (float(np.mean(af0[mask0, 0])), float(np.mean(af0[mask0, 1])))
+    mix_keyframes = sorted(set(HAZARD_KEYFRAMES) | {w["mid_step"] for w in walkers})
+    render_keyframes(0)
+    gif_frames.append((0, af0.copy(), ai0.copy()))
+
+    for step in range(1, args.steps + 1):
+        idxs, xs, ys, zs, hs, vxs, vys, written = [], [], [], [], [], [], [], {}
+        for w in walkers:
+            if w["done_step"] is not None or step < w["start_step"]:
+                continue  # standing at the kerb / already across (c_step never moves slots)
+            w["traveled"] += w["speed_mps"] * args.dt
+            if w["traveled"] >= w["crossing_width_m"]:
+                w["traveled"] = w["crossing_width_m"]
+                w["done_step"] = step
+            px = w["start"][0] + w["dir"][0] * w["traveled"]
+            py = w["start"][1] + w["dir"][1] * w["traveled"]
+            v = w["speed_mps"] if w["done_step"] is None else 0.0
+            idxs.append(w["row"])
+            xs.append(px); ys.append(py); zs.append(w["z"]); hs.append(w["heading"])
+            vxs.append(w["dir"][0] * v); vys.append(w["dir"][1] * v)
+            written[w["row"]] = (px, py)
+        if cut_in is not None:
+            px, py, pz, ph = cut_in_pose(cut_in, step, args.dt)
+            idxs.append(cut_in["row"])
+            xs.append(px); ys.append(py); zs.append(pz); hs.append(ph)
+            vxs.append(cut_in["dir"][0] * cut_in["cruise_mps"])
+            vys.append(cut_in["dir"][1] * cut_in["cruise_mps"])
+            written[cut_in["row"]] = (px, py)
+        if idxs:
+            env.set_agent_states(
+                np.asarray(idxs, np.int32),
+                np.asarray(xs, np.float32), np.asarray(ys, np.float32),
+                np.asarray(zs, np.float32), np.asarray(hs, np.float32),
+                np.asarray(vxs, np.float32), np.asarray(vys, np.float32),
+                np.zeros(len(idxs), np.float32), np.zeros(len(idxs), np.float32),
+                None, np.zeros(len(idxs), np.float32),
+            )
+        env.step(actions)
+        steps_run = step
+        capture()
+        record_step()
+        live = (ai0[:, 3] == 1) & (ai0[:, 2] == 1)
+        collision_curve.append(int(np.sum(live & (mf0[:, COLLISION_IDX] > 0))))
+        for w in walkers:
+            trails[w["row"]].append((float(af0[w["row"], 0]), float(af0[w["row"], 1])))
+            if w["row"] in written:
+                px, py = written[w["row"]]
+                w["tracking_max_err_m"] = max(
+                    w["tracking_max_err_m"],
+                    max(abs(px - float(af0[w["row"], 0])), abs(py - float(af0[w["row"], 1]))))
+        if cut_in is not None:
+            cut_trail.append((float(af0[cut_in["row"], 0]), float(af0[cut_in["row"], 1])))
+            if cut_in["row"] in written:
+                px, py = written[cut_in["row"]]
+                cut_in["tracking_max_err_m"] = max(
+                    cut_in["tracking_max_err_m"],
+                    max(abs(px - float(af0[cut_in["row"], 0])),
+                        abs(py - float(af0[cut_in["row"], 1]))))
+        lo, hi = env.agent_offsets[0], env.agent_offsets[1]
+        if episode_end is None and bool(np.any(env.truncations[lo:hi])):
+            episode_end = step
+            print(f"[hazard-demo] env0 mix episode ended at step {step}")
+            break
+        if step in mix_keyframes:
+            render_keyframes(step)
+        if args.gif_stride > 0 and step % args.gif_stride == 0:
+            gif_frames.append((step, af0.copy(), ai0.copy()))
+
+    for w in walkers:
+        w["crossing_duration_s"] = (round((w["done_step"] - w["start_step"] + 1) * args.dt, 2)
+                                    if w["done_step"] is not None else None)
+    mix_offroad = int(np.sum((ai0[:, 3] == 1) & (ai0[:, 2] == 1) & (mf0[:, OFFROAD_IDX] > 0)))
+    mix_metrics = {
+        "steps_run": steps_run,
+        "ended_step": episode_end if episode_end is not None else f"ran to {steps_run}",
+        "collision_agents_final": int(collision_curve[-1]) if collision_curve else 0,
+        "offroad_agents_final": mix_offroad,
+    }
+    env.close()
+
+    trail_arrays = {r: np.asarray(p) for r, p in trails.items()}
+    gif_path = seed_dir / "mix" / "mix.gif"
+    gif_imgs = [
+        render_gif_frame(st, af, ai, road_elements, traffic_elements, sdc_row,
+                         gif_center, HAZARD_GIF_WINDOW_M, 900, args.dt, args.seed,
+                         map_bin.stem, mode_label="mix",
+                         static_indices=static_indices, static_class_of=static_class_of,
+                         walker_indices=walker_rows, walker_trails=trail_arrays)
+        for st, af, ai in gif_frames
+    ]
+    if gif_imgs:
+        gif_imgs[0].save(gif_path, save_all=True, append_images=gif_imgs[1:],
+                         duration=int(1000 / args.gif_fps), loop=0)
+
+    # ---- episode 2: same-seed clean baseline (comparison side) ---------------
+    env_b = build_env(args, map_bin)
+    env_b.reset(seed=args.seed)
+    scenarios_b = env_b.get_state()
+    buffers_b = capture_buffers(env_b, scenarios_b)
+    sdc_row_b = int((scenarios_b[0].get("active_agent_indices") or [0])[0])
+
+    def capture_b():
+        env_b.get_obs_html_frame(
+            buffers_b["agent_f32"], buffers_b["agent_i32"], buffers_b["metrics_f32"],
+            buffers_b["puffer_f32"], buffers_b["traffic_i16"], buffers_b["goals_f32"],
+            buffers_b["rewards_f32"], buffers_b["coefs_f32"],
+        )
+
+    capture_b()
+    abf, abi, amf = buffers_b["agent_f32"][0], buffers_b["agent_i32"][0], buffers_b["metrics_f32"][0]
+    per_step_b = []
+
+    def record_step_b():
+        valid = (abi[:, 3] == 1) & (abi[:, 2] == 1) & (abi[:, 5] == 0)
+        per_step_b.append({"x": abf[:, 0].copy(), "y": abf[:, 1].copy(),
+                           "v": abf[:, 6].copy(), "valid": valid.copy(),
+                           "coll": (amf[:, COLLISION_IDX] > 0).copy()})
+
+    record_step_b()
+    baseline_keyframes = []
+    snap_b = {}
+    baseline_end = None
+
+    def render_keyframes_b(step):
+        pil = render_full_map(step, abf, abi, road_elements, traffic_elements,
+                              sdc_row_b, map_corners, args.dt, args.seed, map_bin.stem,
+                              "baseline")
+        path = baseline_dir / f"env0_t{step:03d}.png"
+        pil.save(path)
+        baseline_keyframes.append(str(path.relative_to(seed_dir)))
+        if step in COMPARE_KEYFRAMES or any(step == w["mid_step"] for w in walkers):
+            snap_b[step] = (abf.copy(), abi.copy())
+
+    render_keyframes_b(0)
+    for step in range(1, args.steps + 1):
+        env_b.step(actions)
+        capture_b()
+        record_step_b()
+        lo, hi = env_b.agent_offsets[0], env_b.agent_offsets[1]
+        if baseline_end is None and bool(np.any(env_b.truncations[lo:hi])):
+            baseline_end = step
+            print(f"[hazard-demo] env0 baseline episode ended at step {step}")
+            break
+        if step in sorted(set(COMPARE_KEYFRAMES) | {w["mid_step"] for w in walkers}):
+            render_keyframes_b(step)
+    baseline_offroad = int(np.sum((abi[:, 3] == 1) & (abi[:, 2] == 1) & (amf[:, OFFROAD_IDX] > 0)))
+    baseline_metrics = {
+        "steps_run": len(per_step_b) - 1,
+        "ended_step": baseline_end if baseline_end is not None else f"ran to {len(per_step_b) - 1}",
+        "collision_agents_final": int(np.sum((abi[:, 3] == 1) & (abi[:, 2] == 1)
+                                             & (amf[:, COLLISION_IDX] > 0))),
+        "offroad_agents_final": baseline_offroad,
+    }
+    env_b.close()
+
+    # ---- interaction metrics (crossing / contact / slowdown) ------------------
+    Xj = np.stack([r["x"] for r in per_step]); Yj = np.stack([r["y"] for r in per_step])
+    Vj = np.stack([r["v"] for r in per_step]); Lj = np.stack([r["valid"] for r in per_step])
+    Cj = np.stack([r["coll"] for r in per_step])
+    Xb = np.stack([r["x"] for r in per_step_b]); Yb = np.stack([r["y"] for r in per_step_b])
+    Vb = np.stack([r["v"] for r in per_step_b]); Lb = np.stack([r["valid"] for r in per_step_b])
+    Cb = np.stack([r["coll"] for r in per_step_b])
+    len_b = len(per_step_b)
+
+    ev_j_total = ev_b_total = hit_total = 0
+    walker_outputs = []
+    for w in walkers:
+        t0 = w["start_step"]
+        t1 = w["done_step"] if w["done_step"] is not None else steps_run
+        pos = trail_arrays[w["row"]].astype(float)
+        rows_j = _window_rows(pos, Xj, Yj, Lj, t0, t1, WALKER_REACTION_RADIUS_M)
+        rows_b = _window_rows(pos, Xb, Yb, Lb, t0, min(t1, len_b - 1), WALKER_REACTION_RADIUS_M)
+        ev_j = sum(slowdown_onsets(Vj[:, r], t0, t1) for r in rows_j)
+        ev_b = sum(slowdown_onsets(Vb[:, r], t0, min(t1, len_b - 1)) for r in rows_b)
+        min_d, arg = _window_min_dist(pos, Xj, Yj, Lj, t0, t1)
+        contacts = contact_rows(pos, Xj, Yj, Cj, Lj, t0, t1, WALKER_HIT_DIST_M)
+        ev_j_total += ev_j
+        ev_b_total += ev_b
+        hit_total += len(contacts)
+        walker_outputs.append({
+            "k": w["k"], "kernel_row": int(w["row"]), "lane_id": w["lane_id"],
+            "s": round(w["s"], 2),
+            "start_m": [round(v, 2) for v in w["start"]],
+            "end_m": [round(v, 2) for v in w["end"]],
+            "crossing_width_m": round(w["crossing_width_m"], 2),
+            "speed_mps": round(w["speed_mps"], 3),
+            "start_step": w["start_step"],
+            "completed": w["done_step"] is not None,
+            "completed_step": w["done_step"],
+            "crossing_duration_s": w["crossing_duration_s"],
+            "min_dist_to_vehicle_m": round(min_d, 3) if min_d is not None else None,
+            "min_dist_capture_and_row": list(arg) if arg else None,
+            "vehicles_in_radius": len(rows_j),
+            "slowdown_events_mix": ev_j,
+            "slowdown_events_baseline": ev_b,
+            "walker_hit_vehicle_rows": contacts,
+            "tracking_max_err_m": round(float(w["tracking_max_err_m"]), 4),
+        })
+
+    if not cfg["cut_in"]["enable"]:
+        cut_out = {"attempted": False, "placed": False, "verdict": "disabled",
+                   "reason": "hazard config cut_in.enable: false (default; M2 three-seed "
+                             "all abandoned — kernel per-agent IDM is the recorded alternative)",
+                   "alternative": CUT_IN_ALTERNATIVE}
+    elif cut_in is None:
+        cut_out = {"attempted": True, "placed": False, "verdict": "abandoned",
+                   "reason": "no straight near-parallel lane pair with a collision-free start",
+                   "alternative": CUT_IN_ALTERNATIVE}
+    else:
+        t0, t1 = cut_in["window"]
+        t1 = min(t1, steps_run)
+        pos = np.asarray(cut_trail, dtype=float)
+        rows_j = _window_rows(pos, Xj, Yj, Lj, t0, t1, WALKER_REACTION_RADIUS_M)
+        rows_b = _window_rows(pos, Xb, Yb, Lb, t0, min(t1, len_b - 1), WALKER_REACTION_RADIUS_M)
+        ev_j = sum(slowdown_onsets(Vj[:, r], t0, t1) for r in rows_j)
+        ev_b = sum(slowdown_onsets(Vb[:, r], t0, min(t1, len_b - 1)) for r in rows_b)
+        contacts = contact_rows(pos, Xj, Yj, Cj, Lj, t0, t1, CUT_IN_CONTACT_DIST_M)
+        tracked = cut_in["tracking_max_err_m"] <= CUT_IN_MAX_TRACKING_ERR_M
+        kept = tracked and ev_j >= 1 and not contacts
+        cut_out = {
+            "attempted": True, "placed": True,
+            "mechanism": "static co-sim slot puppeteered via set_agent_states (same python stepping as walkers)",
+            "lane_id": cut_in["lane_id"], "adjacent_lane_id": cut_in["adjacent_lane_id"],
+            "lateral_offset_m": round(cut_in["lateral_offset_m"], 2),
+            "merge_steps": cut_in["merge_steps"],
+            "cruise_mps": round(cut_in["cruise_mps"], 2),
+            "window_steps": [t0, t1],
+            "slowdown_events_mix": ev_j,
+            "slowdown_events_baseline": ev_b,
+            "contact_vehicle_rows": contacts,
+            "tracking_max_err_m": round(float(cut_in["tracking_max_err_m"]), 4),
+            "verdict": "kept" if kept else "abandoned",
+            "reason": ("merge completed, followers reacted, no scripted contact"
+                       if kept else
+                       ("tracking error >%.2f m" % CUT_IN_MAX_TRACKING_ERR_M if not tracked
+                        else ("followers produced %d contact(s) during the merge" % len(contacts)
+                              if contacts else
+                              "0 follower slowdown events during the merge window"))),
+            "alternative": None if kept else CUT_IN_ALTERNATIVE,
+        }
+        ev_j_total += cut_out["slowdown_events_mix"]
+        ev_b_total += cut_out["slowdown_events_baseline"]
+
+    interaction = {
+        "radius_m": WALKER_REACTION_RADIUS_M,
+        "definition": (f"window=[start_step, done_step]; ref = vehicle speed at window start "
+                       f"(floor {SLOWDOWN_REF_FLOOR_MPS} m/s); event = >= {SLOWDOWN_SUSTAIN_STEPS} "
+                       f"consecutive captures at <= {SLOWDOWN_DROP_FRAC}*ref, onset-counted; "
+                       "radius anchored to the scripted walker trajectory in BOTH runs"),
+        "walkers_completed": sum(1 for w in walker_outputs if w["completed"]),
+        "walkers_total": len(walker_outputs),
+        "slowdown_events_baseline_total": ev_b_total,
+        "slowdown_events_mix_total": ev_j_total,
+        "walker_contact_vehicles_total": hit_total,
+        "cut_in_verdict": cut_out["verdict"],
+    }
+
+    # ---- comparison artifacts --------------------------------------------------
+    missing = []
+    for t in COMPARE_KEYFRAMES:
+        b_png = baseline_dir / f"env0_t{t:03d}.png"
+        h_png = mix_dir / f"env0_t{t:03d}.png"
+        if b_png.is_file() and h_png.is_file():
+            h_img = add_hazard_callouts(Image.open(h_png), placed,
+                                        full_map_world_to_px(map_corners), cjk_font)
+            targets = []
+            for w in walkers:
+                wpos = trails[w["row"]][min(t, len(trails[w["row"]]) - 1)]
+                targets.append((f"walker{w['k']} jaywalker", "jaywalker",
+                                wpos[0], wpos[1], GIF_COLORS["walker"]))
+            if cut_in:
+                cpt = cut_trail[min(t, len(cut_trail) - 1)]
+                targets.append(("cut-in maker", "cut-in vehicle", cpt[0], cpt[1],
+                                HAZARD_CLASS_COLORS["cut_in"]))
+            if targets:
+                h_img = add_walker_callouts(h_img, targets,
+                                            full_map_world_to_px(map_corners), cjk_font)
+            side_by_side(b_png, h_img, compare_dir / f"compare_t{t:03d}.png",
+                         labels=("baseline", "mix"))
+        else:
+            missing.append(t)
+
+    zooms = []
+    zoom_cone_paths, zoom_walker_paths = [], []
+    cone_zone_keys = {e.get("zone_id") for e in placed if e["kind"] == "cone"}
+    for key, pts in zone_centers.items():
+        ctr = (float(np.mean([p[0] for p in pts])), float(np.mean([p[1] for p in pts])))
+        zoom_w2p = lambda x, y, ctr=ctr: _world_to_px(
+            x, y, ctr, ZOOM_PX / ZOOM_WINDOW_M, ZOOM_PX)
+        for t in (0, 40):
+            if t not in snap_mix or t not in snap_b:
+                continue
+            b_img = render_gif_frame(t, snap_b[t][0], snap_b[t][1], road_elements,
+                                     traffic_elements, sdc_row_b, ctr, ZOOM_WINDOW_M, ZOOM_PX,
+                                     args.dt, args.seed, map_bin.stem, mode_label="baseline",
+                                     min_cone_px=0, walker_min_px=0)
+            m_img = render_gif_frame(t, snap_mix[t][0], snap_mix[t][1], road_elements,
+                                     traffic_elements, sdc_row, ctr, ZOOM_WINDOW_M, ZOOM_PX,
+                                     args.dt, args.seed, map_bin.stem, mode_label="mix",
+                                     static_indices=static_indices,
+                                     static_class_of=static_class_of,
+                                     walker_indices=walker_rows,
+                                     walker_trails={r: p[:t + 1] for r, p in trail_arrays.items()},
+                                     min_cone_px=0, walker_min_px=0)
+            m_img = add_hazard_callouts(m_img, hazards_in_window(placed, ctr, ZOOM_WINDOW_M),
+                                        zoom_w2p, cjk_font)
+            zoom_name = f"zoom_{key}_t{t:03d}.png"
+            side_by_side(b_img, m_img, compare_dir / zoom_name, labels=("baseline", "mix"))
+            zooms.append(f"compare/{zoom_name}")
+            if key in cone_zone_keys:
+                zoom_cone_paths.append(f"compare/{zoom_name}")
+    for w in walkers:
+        t = w["mid_step"]
+        if t not in snap_mix or t not in snap_b:
+            missing.append(f"zoom_walker{w['k']}_t{t:03d}")
+            continue
+        ctr = w["cross_pt"]
+        zoom_w2p = lambda x, y, ctr=ctr: _world_to_px(x, y, ctr, ZOOM_PX / ZOOM_WINDOW_M, ZOOM_PX)
+        b_img = render_gif_frame(t, snap_b[t][0], snap_b[t][1], road_elements,
+                                 traffic_elements, sdc_row_b, ctr, ZOOM_WINDOW_M, ZOOM_PX,
+                                 args.dt, args.seed, map_bin.stem, mode_label="baseline",
+                                 min_cone_px=0, walker_min_px=0)
+        m_img = render_gif_frame(t, snap_mix[t][0], snap_mix[t][1], road_elements,
+                                 traffic_elements, sdc_row, ctr, ZOOM_WINDOW_M, ZOOM_PX,
+                                 args.dt, args.seed, map_bin.stem, mode_label="mix",
+                                 static_indices=static_indices, static_class_of=static_class_of,
+                                 walker_indices=walker_rows,
+                                 walker_trails={r: p[:t + 1] for r, p in trail_arrays.items()},
+                                 min_cone_px=0, walker_min_px=0)
+        wpos = trails[w["row"]][min(t, len(trails[w["row"]]) - 1)]
+        targets = [(f"walker{w['k']} jaywalker", "jaywalker", wpos[0], wpos[1],
+                    GIF_COLORS["walker"])]
+        m_img = add_walker_callouts(m_img, targets, zoom_w2p, cjk_font)
+        zoom_name = f"zoom_walker{w['k']}_t{t:03d}.png"
+        side_by_side(b_img, m_img, compare_dir / zoom_name, labels=("baseline", "mix"))
+        zooms.append(f"compare/{zoom_name}")
+        zoom_walker_paths.append(f"compare/{zoom_name}")
+
+    trails_path = None
+    if walkers:
+        pil = render_full_map(steps_run, af0, ai0, road_elements, traffic_elements, sdc_row,
+                              map_corners, args.dt, args.seed, map_bin.stem, "mix",
+                              static_indices=static_indices, static_class_of=static_class_of,
+                              walker_indices=walker_rows, walker_trails=trail_arrays)
+        pil = add_trail_annotations(pil, walkers, trail_arrays,
+                                    full_map_world_to_px(map_corners), cut_in, cut_trail, cjk_font)
+        pil.save(seed_dir / "trails.png")
+        trails_path = "trails.png"
+
+    # pixel-existence audits: cone-orange and walker-magenta pixels in every
+    # image that should show them; any 0 -> hard fail (M1/M2 mechanism)
+    cone_audit_paths = (list(keyframe_paths)
+                        + [f"compare/compare_t{t:03d}.png" for t in COMPARE_KEYFRAMES
+                           if t not in missing]
+                        + zoom_cone_paths) if cone_zone_keys else []
+    cone_audit = audit_pixels(seed_dir, cone_audit_paths, CONE_RGB, "cone") \
+        if cone_audit_paths else {}
+    walker_audit_paths = (list(keyframe_paths)
+                          + [f"compare/compare_t{t:03d}.png" for t in COMPARE_KEYFRAMES
+                             if t not in missing]
+                          + zoom_walker_paths
+                          + (["trails.png"] if trails_path else [])) if walkers else []
+    walker_audit = audit_pixels(seed_dir, walker_audit_paths, WALKER_RGB, "walker") \
+        if walker_audit_paths else {}
+    print(f"[hazard-demo] pixel audits: cones={len(cone_audit)} walker={len(walker_audit)} images")
+
+    notes = [
+        "边界声明（M3）：本配置面是原型级（Python 侧）——旋钮只驱动 demo 的 co-sim 放置逻辑；"
+        "真正的内核子系统（C reset 内生放置、PEDESTRIAN type、per-agent IDM）属下一阶段规格票，本票零内核改动。",
+        "配置来源 " + str(cfg.get("_path")) + "，init 前经 validate_hazard_config fail-fast 校验"
+        "（范围/类型/概率界外立即报错，校验器独立可测：tests/test_hazard_demo.py）。",
+        "回归契约：enable: false（全部类型禁用）→ 0 个 co-sim 静态槽 + 零放置 → episode 与纯 gigaflow "
+        "baseline 逐位一致（小规模逐位测试在 tests/test_hazard_demo.py；全规模双门在 M3 交付说明）。",
+        "static-hazards / jaywalker 模式未动：放置函数新参数全部默认回退到冻结的 M1/M2 常量，"
+        "同 seed 数字逐位不变。",
+        "mix 机制：静态三类一次性放置（M1 路径），walker/cut-in 每步 set_agent_states 步进（M2 路径），"
+        "两类共用 co-sim 静态槽；set_agent_states 只写 vec->envs[0] → 强制 --envs 1。",
+        "mix 槽容量由配置上界推导（mix_slot_capacity）：parked 上界 + 2×cluster 上界 + "
+        "zones 上界×每区锥数上界 + walker 上界 + cut_in 1；未用槽在内核侧 sim_valid=0，不参与碰撞/观测。",
+        "walker 在 mix 中额外拒绝与已放置静态 hazard 重叠（plan_walkers static_placed 参数）；"
+        "jaywalker 模式不传该参数，行为与 M2 逐位一致。",
+        "交互度量口径同 M2：横穿窗口 = [start_step, done_step]；反应半径 15 m；"
+        "明显减速 ref = 窗口首步速度（≥2 m/s 底线），连续 ≥3 步 ≤0.5*ref，onset 去重；"
+        "接触 = 窗口内 3 m 内 latch 碰撞车辆；cut-in 接触距离 6 m。",
+        "渲染遵循长期标准：单独 legend.png（index 首项，mix 图例仅列出本 run 实际 spawn 的类别——"
+        "cut_in.enable=false 时不列 cut-in 行）；类别着色；锥桶/行人全图强制 ≥12px 标记；"
+        "compare/zoom 有文字+箭头指认；CJK 缺字体时英文-only（无豆腐块）；"
+        "锥桶/行人像素审计任何一张为 0 即硬失败。",
+        "kernel_lane_assoc_failures 口径同 M1：贴边静态槽在内核侧 current_lane_idx=-1 属在道证据缺失，"
+        "无 gameplay 影响，如实记录不修正；walker 刻意起点在路缘外，不进该检查。",
+    ]
+    seed_summary = {
+        "mode": "mix",
+        "kernel": kernel_provenance(),
+        "hazard_config": {k: (v if k != "_path" else v) for k, v in cfg.items()},
+        "seed": args.seed,
+        "map": {"name": map_bin.stem, "path": str(map_bin)},
+        "agents_per_env": args.agents_per_env,
+        "steps_requested": args.steps,
+        "dt": args.dt,
+        "placement": {
+            "parked": {"planned": plan["parked"],
+                       "placed": sum(1 for e in placed if e["kind"] == "parked")},
+            "collided": {"planned": plan["clusters"],
+                         "placed": len({e.get("cluster_id") for e in placed
+                                        if e.get("cluster_id")})},
+            "cones": {"planned": plan["cone_zones"],
+                      "placed": len({e.get("zone_id") for e in placed
+                                     if e.get("zone_id")}),
+                      "cones_placed": sum(1 for e in placed if e["kind"] == "cone")},
+            "walkers": {"planned": walkers_planned, "placed": len(walkers)},
+            "reject_reasons": {**{f"static:{k}": v for k, v in rejects.items() if v},
+                               **{f"walker:{k}": v for k, v in walker_rejects.items() if v}},
+            "slots_used": len(initial),
+            "slots_reserved": slots,
+        },
+        "legality": legality,
+        "walkers": walker_outputs,
+        "cut_in": cut_out,
+        "interaction": interaction,
+        "simulation": {
+            "window_step": min(steps_run, len_b - 1),
+            "collision_agents_baseline_final": baseline_metrics["collision_agents_final"],
+            "collision_agents_mix_final": mix_metrics["collision_agents_final"],
+            "baseline": baseline_metrics,
+            "mix": mix_metrics,
+        },
+        "render_audit": {
+            "cone_color_rgb": list(CONE_RGB),
+            "walker_color_rgb": list(WALKER_RGB),
+            "cone_pixel_counts": cone_audit,
+            "walker_pixel_counts": walker_audit,
+            "images_checked": len(cone_audit) + len(walker_audit),
+            "all_nonzero": True,
+        },
+        "artifacts": {
+            "baseline_keyframes": baseline_keyframes,
+            "mix_keyframes": keyframe_paths,
+            "mix_gif": "mix/mix.gif" if gif_imgs else None,
+            "compare": [f"compare/compare_t{t:03d}.png" for t in COMPARE_KEYFRAMES
+                        if t not in missing],
+            "zooms": zooms,
+            "trails_overlay": trails_path,
+        },
+        "missing_artifacts": missing,
+        "runtime_s": round(time.time() - t_start, 1),
+        "notes": notes,
+    }
+    (seed_dir / "summary.json").write_text(
+        json.dumps(seed_summary, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+
+    # ---- aggregate artifacts over all seeds run so far -----------------------
+    seed_summaries = []
+    for d in sorted(root.glob("seed*/summary.json")):
+        try:
+            seed_summaries.append(json.loads(d.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError):
+            pass
+    write_mix_root(root, seed_summaries, cjk_path=cjk_font)
+    comp = sum(1 for w in walker_outputs if w["completed"])
+    print(f"[hazard-demo] artifacts -> {root} ({seed_summary['runtime_s']}s); "
+          f"crossed {comp}/{len(walker_outputs)}, slowdown events "
+          f"baseline={ev_b_total} vs mix={ev_j_total}, contacts={hit_total}, "
+          f"collisions baseline={baseline_metrics['collision_agents_final']} vs "
+          f"mix={mix_metrics['collision_agents_final']}, cut_in={cut_out['verdict']}")
+
+
+def write_mix_counts_histogram(root, seed_summaries):
+    """Per-seed placed counts for the four mix classes."""
+    import matplotlib.pyplot as plt
+
+    seed_summaries = sorted(seed_summaries, key=lambda s: s["seed"])
+    classes = ("parked", "collided clusters", "cones", "walkers")
+    counts = {c: [] for c in classes}
+    for s in seed_summaries:
+        p = s["placement"]
+        counts["parked"].append(p["parked"]["placed"])
+        counts["collided clusters"].append(p["collided"]["placed"])
+        counts["cones"].append(p["cones"]["cones_placed"])
+        counts["walkers"].append(p["walkers"]["placed"])
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    xpos = np.arange(len(classes))
+    width = 0.8 / max(len(seed_summaries), 1)
+    for i, s in enumerate(seed_summaries):
+        vals = [counts[c][i] for c in classes]
+        ax.bar(xpos + i * width, vals, width, label=f"seed {s['seed']} (placed)")
+    ax.set_xticks(xpos + width * (len(seed_summaries) - 1) / 2)
+    ax.set_xticklabels(classes)
+    ax.set_ylabel("count per env")
+    ax.set_title("M3 mix placement counts (config-driven, per seed)")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(root / "counts_histogram.png", dpi=140)
+    plt.close(fig)
+
+
+def write_mix_root(root, seed_summaries, cjk_path=None):
+    """Aggregate legend.png / counts_histogram.png / summary.json / index.html
+    over mix seed dirs. The root legend lists only classes that spawned in at
+    least one seed (owner rule: never list un-spawned categories)."""
+    spawned = set()
+    for s in seed_summaries:
+        p = s["placement"]
+        if p["parked"]["placed"]:
+            spawned.add("parked")
+        if p["collided"]["placed"]:
+            spawned.add("collided")
+        if p["cones"]["placed"]:
+            spawned.add("cone")
+        if p["walkers"]["placed"]:
+            spawned.add("walker")
+        if s.get("cut_in", {}).get("placed"):
+            spawned.add("cut_in")
+    render_legend_png(root / "legend.png", "mix", cjk_path=cjk_path,
+                      spawned=spawned or None)
+    all_w = [w for s in seed_summaries for s_walkers in [s.get("walkers", [])] for w in s_walkers]
+    mind = [w["min_dist_to_vehicle_m"] for w in all_w
+            if w.get("min_dist_to_vehicle_m") is not None]
+    completed = sum(1 for w in all_w if w.get("completed"))
+    mix_coll = sum(s["simulation"]["mix"]["collision_agents_final"] for s in seed_summaries)
+    base_coll = sum(s["simulation"]["baseline"]["collision_agents_final"] for s in seed_summaries)
+    mix_off = sum(s["simulation"]["mix"]["offroad_agents_final"] for s in seed_summaries)
+    agg = {
+        "mode": "mix",
+        "kernel": kernel_provenance(),
+        "hazard_config": seed_summaries[0].get("hazard_config") if seed_summaries else None,
+        "seeds": [s["seed"] for s in seed_summaries],
+        "aggregate": {
+            "parked_placed_total": sum(s["placement"]["parked"]["placed"] for s in seed_summaries),
+            "clusters_placed_total": sum(s["placement"]["collided"]["placed"] for s in seed_summaries),
+            "cones_placed_total": sum(s["placement"]["cones"]["cones_placed"] for s in seed_summaries),
+            "walkers_placed_total": sum(s["placement"]["walkers"]["placed"] for s in seed_summaries),
+            "walkers_completed_total": completed,
+            "completion_rate": round(completed / len(all_w), 3) if all_w else None,
+            "walker_min_dist_m": ({"min": round(float(np.min(mind)), 3),
+                                   "p50": round(float(np.percentile(mind, 50)), 3),
+                                   "p95": round(float(np.percentile(mind, 95)), 3)}
+                                  if mind else None),
+            "slowdown_events_baseline_total": sum(
+                s["interaction"]["slowdown_events_baseline_total"] for s in seed_summaries),
+            "slowdown_events_mix_total": sum(
+                s["interaction"]["slowdown_events_mix_total"] for s in seed_summaries),
+            "walker_contact_vehicles_total": sum(
+                s["interaction"]["walker_contact_vehicles_total"] for s in seed_summaries),
+            "collision_agents_total": {"baseline": base_coll, "mix": mix_coll},
+            "offroad_agents_mix_total": mix_off,
+            "dynamic_overlap_violations_total": sum(
+                s["legality"]["all_slots_dynamic_overlap_postcheck"] for s in seed_summaries),
+            "cut_in_verdicts": {str(s["seed"]): s["cut_in"].get("verdict")
+                                for s in sorted(seed_summaries, key=lambda x: x["seed"])},
+        },
+        "per_seed": [{
+            "seed": s["seed"],
+            "placement": {k: s["placement"][k] for k in
+                          ("parked", "collided", "cones", "walkers", "slots_used")},
+            "legality": {k: s["legality"][k] for k in
+                         ("kernel_lane_assoc_failures",
+                          "dynamic_overlap_violations_postcheck",
+                          "intentional_intra_cluster_overlaps",
+                          "all_slots_dynamic_overlap_postcheck")},
+            "interaction": {k: s["interaction"][k] for k in
+                            ("walkers_completed", "walkers_total",
+                             "slowdown_events_baseline_total", "slowdown_events_mix_total",
+                             "walker_contact_vehicles_total", "cut_in_verdict")},
+            "simulation": {"baseline": s["simulation"]["baseline"],
+                           "mix": s["simulation"]["mix"]},
+            "render_audit": {"images_checked": s["render_audit"]["images_checked"],
+                             "all_nonzero": s["render_audit"]["all_nonzero"]},
+        } for s in sorted(seed_summaries, key=lambda x: x["seed"])],
+        "notes": (seed_summaries[-1].get("notes") if seed_summaries else []),
+    }
+    (root / "summary.json").write_text(
+        json.dumps(agg, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    if not seed_summaries:
+        return
+    try:
+        write_mix_counts_histogram(root, seed_summaries)
+    except Exception as exc:  # chart is cosmetic; never sink the run
+        print(f"[hazard-demo] mix counts histogram skipped: {exc}")
+
+    rows = ""
+    for s in sorted(seed_summaries, key=lambda x: x["seed"]):
+        p, inter, sim = s["placement"], s["interaction"], s["simulation"]
+        cells = (f"<td>{p['parked']['placed']}</td><td>{p['collided']['placed']}</td>"
+                 f"<td>{p['cones']['placed']} ({p['cones']['cones_placed']} cones)</td>"
+                 f"<td>{p['walkers']['placed']}</td>"
+                 f"<td>{inter['walkers_completed']}/{inter['walkers_total']}</td>"
+                 f"<td>{inter['slowdown_events_baseline_total']} → "
+                 f"{inter['slowdown_events_mix_total']}</td>"
+                 f"<td>{inter['walker_contact_vehicles_total']}</td>"
+                 f"<td>{sim['baseline']['collision_agents_final']} → "
+                 f"{sim['mix']['collision_agents_final']}</td>"
+                 f"<td>{sim['mix']['offroad_agents_final']}</td>"
+                 f"<td>{inter['cut_in_verdict']}</td>")
+        rows += f"<tr><td>seed {s['seed']}</td>{cells}</tr>"
+    galleries = ""
+    for s in sorted(seed_summaries, key=lambda x: x["seed"]):
+        sd = f"seed{s['seed']}"
+        frames = "".join(
+            f'<figure><img src="{sd}/mix/frames/{p.name}"/>'
+            f"<figcaption>{p.name}</figcaption></figure>"
+            for p in sorted((root / sd / "mix" / "frames").glob("*.png")))
+        compares = "".join(
+            f'<figure><img src="{sd}/compare/{p.name}"/>'
+            f"<figcaption>{p.name}（左 baseline / 右 mix）</figcaption></figure>"
+            for p in sorted((root / sd / "compare").glob("*.png")))
+        trails_img = (f'<figure><img src="{sd}/trails.png"/>'
+                      f"<figcaption>trails.png — 最终帧叠加全程轨迹</figcaption></figure>"
+                      if (root / sd / "trails.png").is_file() else "")
+        gif = (f'<img src="{sd}/mix/mix.gif" width="560"/>'
+               if (root / sd / "mix" / "mix.gif").is_file() else "")
+        galleries += (f"<h2>seed {s['seed']}</h2>"
+                      f"<h3>mix 全图帧</h3>{frames}"
+                      f"<h3>compare / 事件 zoom</h3>{compares}"
+                      f"<h3>轨迹叠加（最终帧 + 全程 trail）</h3>{trails_img}"
+                      f"<h3>跟车 GIF</h3>{gif}\n")
+    a = agg["aggregate"]
+    html = f"""<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8"/>
+<title>Slipstream hazard-demo · M3 mix</title>
+<style>
+  body {{ font-family: -apple-system, "Segoe UI", sans-serif; margin: 24px; background: #fafafa; color: #222; }}
+  h1, h2, h3 {{ color: #333; }} table {{ border-collapse: collapse; margin: 12px 0; }}
+  th, td {{ border: 1px solid #ccc; padding: 6px 10px; font-size: 13px; }}
+  th {{ background: #eee; }} figure {{ margin: 8px; display: inline-block; }}
+  img {{ border: 1px solid #ddd; max-width: 640px; }} figcaption {{ font-size: 12px; color: #666; }}
+  code {{ background: #eee; padding: 2px 6px; }}
+</style></head><body>
+  <h1>M3 mix · 配置驱动的全类型同场演示</h1>
+  <p>命令: <code>PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py --mode mix --seed &lt;42|43|44&gt;</code>
+     （配置: <code>{(agg['hazard_config'] or {}).get('_path', 'config/hazard_demo.yaml')}</code>）</p>
+  <h2>图例（legend.png 单独成图，index 首项；仅列实际 spawn 的类别）</h2>
+  <img src="legend.png" width="520"/>
+  <img src="counts_histogram.png" width="680"/>
+  <h2>汇总</h2>
+  <ul>
+    <li>parked {a['parked_placed_total']} · 碰撞簇 {a['clusters_placed_total']} · 锥桶 {a['cones_placed_total']} ·
+        walker {a['walkers_placed_total']}（完成横穿 {a['walkers_completed_total']}，"
+        完成率 {a['completion_rate']}）。</li>
+    <li>减速事件 baseline {a['slowdown_events_baseline_total']} vs mix {a['slowdown_events_mix_total']}；
+        walker 接触车辆 {a['walker_contact_vehicles_total']}；碰撞 baseline {a['collision_agents_total']['baseline']}
+        vs mix {a['collision_agents_total']['mix']}；mix offroad {a['offroad_agents_mix_total']}；
+        非有意动态重叠 {a['dynamic_overlap_violations_total']}。</li>
+    <li>边界声明：配置面为原型级（Python 侧旋钮驱动 demo 放置）；内核子系统（C reset 内生放置、
+        PEDESTRIAN type、per-agent IDM）属下一阶段规格票，本票零内核改动。</li>
+    <li>回归契约：enable: false → 与纯 gigaflow baseline 逐位一致。</li>
+    <li>像素审计：summary.json render_audit，锥桶/行人任一应含像素图为 0 即硬失败。</li>
+  </ul>
+  <h2>每 seed 度量</h2>
+  <table><tr><th>seed</th><th>parked</th><th>碰撞簇</th><th>锥桶区</th><th>walker</th><th>完成横穿</th>
+  <th>减速事件 baseline → mix</th><th>walker 接触</th><th>碰撞 baseline → mix</th><th>mix offroad</th><th>cut-in</th></tr>
+  {rows}</table>
+  {galleries}
+  <h2>口径 / notes</h2><ul>{''.join(f'<li>{n}</li>' for n in agg['notes'])}</ul>
+</body></html>"""
+    (root / "index.html").write_text(html, encoding="utf-8")
+
+
 def main():
     args = parse_args()
     verify_in_repo_kernel()
     if args.out is None:
         args.out = {"baseline": "artifacts/baseline",
                     "static-hazards": "artifacts/static-hazards",
-                    "jaywalker": "artifacts/jaywalker"}[args.mode]
+                    "jaywalker": "artifacts/jaywalker",
+                    "mix": "artifacts/mix"}[args.mode]
+    if args.hazard_config is not None and args.mode != "mix":
+        raise SystemExit("--hazard-config only applies to --mode mix")
+    if args.mode == "mix":
+        out_dir = REPO_ROOT / args.out if not Path(args.out).is_absolute() else Path(args.out)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        map_bin = resolve_map_bin(args.map_dir, args.map)
+        cfg = load_hazard_config(args.hazard_config)  # init 前校验, fail-fast
+        run_mix(args, map_bin, cfg)
+        return
     if args.mode == "static-hazards":
         out_dir = REPO_ROOT / args.out if not Path(args.out).is_absolute() else Path(args.out)
         out_dir.mkdir(parents=True, exist_ok=True)

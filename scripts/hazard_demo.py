@@ -8,6 +8,10 @@ captures the global agent state every step, and renders top-down artifacts:
 - a cropped follow-cam GIF assembled with pillow
 - ``index.html`` (frames + metrics table) and ``summary.json`` under
   ``artifacts/baseline/``
+- every PNG/GIF frame carries a top-left legend whose rows map 1:1 onto the
+  colors actually drawn by that renderer (viz.py for PNGs, the pillow GIF
+  renderer below); static-hazard renders additionally re-tint the static slots
+  by hazard class and annotate each hazard on compare/zoom images
 
 Usage:
     PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py \
@@ -26,6 +30,7 @@ Notes (see .wayfinder/research/log-to-map-findings.md):
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -38,7 +43,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 # --- C-side layouts (pufferlib/ocean/drive/constants.h) ----------------------
 # "obs_html_frame array field counts": agent_f32 fields in order.
@@ -224,8 +229,12 @@ def _polyline(element, key):
 
 def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements, sdc_row,
                      center, window_m, size_px, dt, seed, map_name,
-                     mode_label="baseline", static_indices=None):
-    """Baseline mode must keep the default-argument rendering byte-identical."""
+                     mode_label="baseline", static_indices=None, static_class_of=None,
+                     legend_entries=None, cjk_path=None):
+    """Follow-cam frame. Geometry/colors are mode-independent; overlays are
+    additive: legend box top-left (rows mirror this renderer's colors), HUD
+    moved to the top-right, static slots tinted by hazard class when
+    ``static_class_of`` is given (baseline keeps plain geometry)."""
     scale = size_px / window_m
     img = Image.new("RGB", (size_px, size_px), GIF_COLORS["background"])
     draw = ImageDraw.Draw(img)
@@ -294,7 +303,7 @@ def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements
             wy = y + lx * sin_h + ly * cos_h
             poly.append(_world_to_px(wx, wy, center, scale, size_px))
         if i in static_set:
-            fill = "#ff7f0e"  # static hazard: parked / collided cluster / cone
+            fill = HAZARD_CLASS_COLORS[(static_class_of or {}).get(i, "cone")]
         else:
             fill = GIF_COLORS["stopped"] if stopped_latched else (GIF_COLORS["sdc"] if is_sdc else GIF_COLORS["vehicle"])
         draw.polygon(poly, fill=fill, outline="#222222" if is_sdc or i in static_set else "#333333")
@@ -302,18 +311,24 @@ def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements
         tipx, tipy = _world_to_px(x + 0.6 * length * cos_h, y + 0.6 * length * sin_h, center, scale, size_px)
         draw.line([poly[0], (tipx, tipy)], fill="#222222", width=1)
 
-    # HUD + scale bar
+    # HUD + scale bar (right-aligned: the legend owns the top-left corner)
     speeds = agent_f32[active, 6]
     mean_v = float(np.mean(speeds)) if speeds.size else 0.0
     n_stopped = int(np.sum(agent_i32[active, 4] == 1))
     n_removed = int(np.sum(agent_i32[active, 5] == 1))
-    draw.text((10, 8), f"t={step} ({step * dt:.1f}s)  agents={int(active.sum())}  "
-                       f"mean_v={mean_v:.1f}m/s  latched={n_stopped}  removed={n_removed}",
-              fill=GIF_COLORS["ink"])
-    draw.text((10, 24), f"IDM gigaflow {mode_label} · {map_name} · seed {seed}", fill=GIF_COLORS["ink"])
-    if static_indices:
-        n_static = len(static_indices)
-        draw.text((10, 40), f"orange = {n_static} static hazards (parked / crashed / cones)", fill="#ff7f0e")
+    hud = [f"t={step} ({step * dt:.1f}s)  agents={int(active.sum())}  "
+           f"mean_v={mean_v:.1f}m/s  latched={n_stopped}  removed={n_removed}",
+           f"IDM gigaflow {mode_label} · {map_name} · seed {seed}"]
+    if static_class_of:
+        counts = {k: sum(1 for v in static_class_of.values() if v == k)
+                  for k in ("parked", "collided", "cone")}
+        hud.append(f"hazards: parked={counts['parked']} cluster={counts['collided']} "
+                   f"cones={counts['cone']}")
+    for i, line in enumerate(hud):
+        x = size_px - int(draw.textlength(line)) - 10
+        draw.text((x, 8 + i * 16), line, fill=GIF_COLORS["ink"])
+    if legend_entries:
+        draw_legend(img, legend_entries, font_px=12, cjk_path=cjk_path)
     bar_m, bar_px = 50.0, 50.0 * scale
     x0, y0 = size_px - int(bar_px) - 16, size_px - 24
     draw.line([(x0, y0), (x0 + bar_px, y0)], fill=GIF_COLORS["ink"], width=2)
@@ -866,9 +881,312 @@ def verify_static_hazards(env, placed, idxs, agent_f32, agent_i32):
     }
 
 
+# --- legend & hazard annotation layer (ticket 07 owner acceptance 2026-11-05) ---
+#
+# Owner feedback: renders were unreadable (bbox colors, goal rings, cones
+# indistinguishable). Every artifact now carries a top-left legend whose rows
+# are transcribed 1:1 from the renderer that produced the frame:
+#   PNG keyframes  -> pufferlib/viz.py plot_simulator_state semantics
+#   GIF frames     -> render_gif_frame semantics above (incl. crosswalk type 31,
+#                     which viz.py does not draw)
+# Hazard classes get dedicated colors (task spec: cones=orange, parked=blue,
+# cluster=dark red), redrawn over viz's uniform inactive gray via the known
+# slot poses; compare/zoom frames add text callouts (hazard side only).
+HAZARD_CLASS_COLORS = {
+    "cone": "#FF8C00",     # orange; GIF cyclist (#ff8c00) never spawns in gigaflow
+    "parked": "#0D1F8C",   # deep navy, clearly darker than vehicle steel blue
+    "collided": "#8B0000",  # dark red vs SDC #d62728 / viz latched pure red #FF0000
+}
+HAZARD_CLASS_LABELS = {
+    "parked": ("parked", "路侧停车"),
+    "collided": ("cluster", "碰撞簇"),
+    "cone": ("cones", "锥桶"),
+}
+VIZ_FIG_PX = 2000  # viz.py SIMULATOR_FIGSIZE (20, 20) in × SIMULATOR_DPI 100
+VIZ_MARK_R_PX = 9  # fixed marker radius: 0.5 m cones must stay visible full-map
+
+
+def detect_cjk_font():
+    """Path of a CJK-capable font, or None (labels fall back to English only,
+    so no tofu blocks ever render). Probes fc-list :lang=zh, then known paths."""
+    try:
+        out = subprocess.run(["fc-list", ":lang=zh", "file"], capture_output=True,
+                             text=True, timeout=10).stdout
+        for line in out.splitlines():
+            cand = line.strip().rstrip(":")
+            if cand and cand.lower().endswith((".ttf", ".ttc", ".otf")) and Path(cand).is_file():
+                return cand
+    except (OSError, subprocess.SubprocessError):
+        pass
+    known = (
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    )
+    for p in known:
+        if Path(p).is_file():
+            return p
+    return None
+
+
+def _load_font(size_px, cjk_path):
+    if cjk_path:
+        try:
+            return ImageFont.truetype(cjk_path, size_px)
+        except OSError:
+            pass  # fall through to the bitmap default (ASCII-only)
+    try:
+        return ImageFont.load_default(size=size_px)
+    except TypeError:  # Pillow < 10.1: fixed-size bitmap font
+        return ImageFont.load_default()
+
+
+def _label(entry, cjk_path):
+    return entry["en"] + (f" {entry['zh']}" if cjk_path and entry.get("zh") else "")
+
+
+def hazard_legend_entries():
+    return [
+        {"sw": "rect", "colors": [HAZARD_CLASS_COLORS["cone"]],
+         "en": "cones: construction cone (diamond marker)", "zh": "锥桶"},
+        {"sw": "rect", "colors": [HAZARD_CLASS_COLORS["parked"]],
+         "en": "parked: kerbside static vehicle", "zh": "路侧停车"},
+        {"sw": "rect", "colors": [HAZARD_CLASS_COLORS["collided"]],
+         "en": "cluster: collided pair (overlap intentional)", "zh": "碰撞簇"},
+    ]
+
+
+def viz_legend_entries(mode):
+    """Rows mirroring viz.plot_simulator_state drawing code (pufferlib/viz.py):
+    _render_roads / _render_traffic / _render_agents, one row per drawn color.
+    Yield signs are disabled in this demo (yield_signs_enabled=False) and are
+    therefore not listed."""
+    import pufferlib.viz as viz
+    ent = []
+    if mode == "static-hazards":  # hazard rows first: they re-tint viz's gray slots
+        ent += hazard_legend_entries()
+    ent += [
+        {"sw": "palette", "colors": list(viz.VEHICLE_COLORS),
+         "en": "vehicle: 18-color palette indexed by agent id", "zh": "车辆(按id取色)"},
+        {"sw": "rect", "colors": ["#FF0000"],
+         "en": "latched vehicle: collision/offroad/red-light/stop", "zh": "违规锁停"},
+        {"sw": "dotring", "colors": ["#1F77B4"],
+         "en": "goal: dot + dashed 2 m ring (vehicle's color)", "zh": "目标点圆环"},
+        {"sw": "lights", "colors": ["#FF0000", "#FFFF00", "#00FF00", "#808080"],
+         "en": "traffic light stop line R/Y/G/unknown-off", "zh": "信号灯停止线"},
+        {"sw": "dash", "colors": ["#FF0000"],
+         "en": "stop sign: black line + red dash overlay", "zh": "停车牌标线"},
+        {"sw": "line", "colors": [viz.COLORS["lane"]],
+         "en": "lane polyline (road type 1-3)", "zh": "车道"},
+        {"sw": "dash", "colors": [viz.COLORS["road_line"]],
+         "en": "lane marking (type 11-18, dashed)", "zh": "车道标线"},
+        {"sw": "line", "colors": [viz.COLORS["road_edge"]],
+         "en": "road edge (type 21-23)", "zh": "道路边线"},
+        {"sw": "text",
+         "en": "black number = agent id", "zh": "车辆编号"},
+    ]
+    return ent
+
+
+def gif_legend_entries(mode):
+    """Rows mirroring render_gif_frame above (this script's pillow renderer).
+    The GIF draws crosswalks (type 31) and colors ALL traffic stop lines by
+    pregenerated state; it draws no goal rings and no agent-id numbers."""
+    ent = []
+    if mode == "static-hazards":
+        ent += hazard_legend_entries()
+    ent += [
+        {"sw": "rect", "colors": [GIF_COLORS["vehicle"]], "en": "vehicle (IDM)", "zh": "车辆"},
+        {"sw": "rect", "colors": [GIF_COLORS["sdc"]], "en": "SDC (camera target)", "zh": "主车"},
+        {"sw": "rect", "colors": [GIF_COLORS["stopped"]], "en": "latched stopped", "zh": "违规锁停"},
+        {"sw": "rect", "colors": [GIF_COLORS["pedestrian"]],
+         "en": "pedestrian type 2 (not spawned here)", "zh": "行人"},
+        {"sw": "rect", "colors": [GIF_COLORS["cyclist"]],
+         "en": "cyclist type 3 (not spawned here)", "zh": "骑行者"},
+        {"sw": "line", "colors": [GIF_COLORS["lane"]], "en": "lane (type 1-9)", "zh": "车道"},
+        {"sw": "line", "colors": [GIF_COLORS["line"]], "en": "lane marking (10-19)", "zh": "标线"},
+        {"sw": "line", "colors": [GIF_COLORS["edge"]], "en": "road edge (20-29)", "zh": "边线"},
+        {"sw": "line", "colors": [GIF_COLORS["crosswalk"]], "en": "crosswalk (31)", "zh": "斑马线"},
+        {"sw": "lights", "colors": ["#ff0000", "#ffee00", "#00cc00", "#8c8c8c"],
+         "en": "traffic stop line by state R/Y/G/other", "zh": "停止线状态"},
+    ]
+    return ent
+
+
+def _draw_swatch(d, entry, x, cy, sw, sh, small_font):
+    kind, colors = entry["sw"], entry.get("colors") or []
+    ink = (40, 40, 40)
+    if kind == "rect":
+        d.rectangle([x, cy - sh // 2, x + sw, cy + sh // 2], fill=colors[0], outline=ink, width=1)
+    elif kind == "palette":
+        step = sw / len(colors)
+        for i, c in enumerate(colors):
+            d.rectangle([x + i * step, cy - sh // 2, x + (i + 1) * step, cy + sh // 2],
+                        fill=c, outline=ink, width=1)
+    elif kind == "lights":
+        step = sw / len(colors)
+        for i, c in enumerate(colors):
+            d.rectangle([x + i * step, cy - sh // 2, x + (i + 1) * step - 2, cy + sh // 2],
+                        fill=c, outline=ink, width=1)
+    elif kind == "line":
+        d.line([x, cy, x + sw, cy], fill=colors[0], width=max(2, sh // 3))
+    elif kind == "dash":
+        for dx in range(0, sw, 7):
+            d.line([x + dx, cy, x + dx + 4, cy], fill=colors[0], width=2)
+    elif kind == "dotring":
+        r = sh * 1.1
+        for a0 in range(0, 360, 90):  # dashed ring, viz draws it linestyles="--"
+            d.arc([x + sw / 2 - r, cy - r, x + sw / 2 + r, cy + r], a0, a0 + 55,
+                  fill=colors[0], width=2)
+        d.ellipse([x + sw / 2 - 2, cy - 2, x + sw / 2 + 2, cy + 2], fill=colors[0])
+    elif kind == "text":
+        d.text((x + 2, cy - sh // 2), "id", fill=(0, 0, 0), font=small_font)
+
+
+def draw_legend(img, entries, font_px=18, cjk_path=None):
+    """Fixed top-left legend box. Returns (img, bottom_row_y) so callouts can
+    avoid covering it."""
+    font = _load_font(font_px, cjk_path)
+    small = _load_font(max(font_px - 4, 8), cjk_path)
+    d = ImageDraw.Draw(img)
+    pad = max(int(font_px * 0.9), 6)
+    line_h = int(font_px * 1.55)
+    sw_w = int(font_px * 1.7)
+    sw_h = max(int(font_px * 0.8), 6)
+    labels = [_label(e, cjk_path) for e in entries]
+    title = "Legend" + (" 图例" if cjk_path else "")
+    box_w = int(max([d.textlength(t, font=font) for t in labels + [title]])) \
+        + sw_w + pad * 3
+    box_h = pad * 2 + int(font_px * 1.3) + line_h * len(entries)
+    d.rectangle([8, 8, 8 + box_w, 8 + box_h], fill=(255, 255, 255), outline=(110, 110, 110), width=2)
+    ty = 8 + pad
+    d.text((8 + pad, ty), title, fill=(0, 0, 0), font=font)
+    ty += int(font_px * 1.3)
+    for entry, text in zip(entries, labels):
+        cy = ty + line_h // 2
+        _draw_swatch(d, entry, 8 + pad, cy, sw_w, sw_h, small)
+        d.text((8 + pad + sw_w + pad // 2, cy - font_px // 2 - 1), text, fill=(0, 0, 0), font=font)
+        ty += line_h
+    return img, 8 + box_h
+
+
+def viz_axes_transform(map_corners):
+    """World→pixel mapping of plot_simulator_state output images.
+
+    Reproduces viz.py exactly: _get_bounds uses center ± max_half_span*1.02,
+    and the axes box is subplots_adjust(left=0.01, bottom=0.02, right=1.00,
+    top=0.96) shrunk to a square by aspect('equal', adjustable='box'),
+    anchored center. Returns ((origin_x, origin_y_top, side_px), world_bounds).
+    """
+    c0, c1, c2, c3 = map_corners[:4]
+    cx, cy = (c0 + c2) / 2, (c1 + c3) / 2
+    radius = max(c2 - c0, c3 - c1) / 2 * 1.02
+    bounds = (cx - radius, cy - radius, cx + radius, cy + radius)  # x_min, y_min, x_max, y_max
+    ax_x0, ax_w = 0.01 * VIZ_FIG_PX, (1.00 - 0.01) * VIZ_FIG_PX
+    ax_y0, ax_h = 0.02 * VIZ_FIG_PX, (0.96 - 0.02) * VIZ_FIG_PX
+    side = min(ax_w, ax_h)
+    origin_x = ax_x0 + (ax_w - side) / 2
+    origin_y_top = VIZ_FIG_PX - (ax_y0 + (ax_h - side) / 2 + side)  # image rows grow downward
+    return (origin_x, origin_y_top, side), bounds
+
+
+def viz_world_to_px(x, y, xform):
+    (ox, oy, side), (x_min, y_min, x_max, y_max) = xform
+    return (ox + (x - x_min) / (x_max - x_min) * side,
+            oy + (y_max - y) / (y_max - y_min) * side)
+
+
+def overlay_hazards_on_viz(pil, placed, map_corners):
+    """Re-tint the static slots viz draws uniformly as inactive gray (#808080):
+    oriented box in class color where it is ≥6 px long, plus a fixed-size
+    class marker (diamond for cones, disc otherwise) so 0.5 m cones remain
+    visible at full-map scale."""
+    d = ImageDraw.Draw(pil)
+    xform = viz_axes_transform(map_corners)
+    (_, _, side), (x_min, _, x_max, _) = xform
+    px_per_m = side / (x_max - x_min)
+    for e in placed:
+        color = HAZARD_CLASS_COLORS[e["kind"]]
+        if e["length"] * px_per_m >= 6.0:
+            corners = [viz_world_to_px(cx, cy, xform) for cx, cy in obb_corners(
+                e["x"], e["y"], e["heading"], e["length"], e["width"])]
+            d.polygon(corners, fill=color, outline=(0, 0, 0), width=2)
+        cx, cy = viz_world_to_px(e["x"], e["y"], xform)
+        r = VIZ_MARK_R_PX
+        if e["kind"] == "cone":  # diamond marker distinguishes 0.5 m cones from cars
+            d.polygon([(cx, cy - r), (cx + r, cy), (cx, cy + r), (cx - r, cy)],
+                      fill=color, outline=(0, 0, 0), width=2)
+        else:
+            d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color, outline=(0, 0, 0), width=2)
+    return pil
+
+
+def add_hazard_callouts(pil, placed, map_corners, cjk_path=None, min_y=0):
+    """English text tags ("parked"/"cluster"/"cones", + CJK when a font was
+    detected) with leader arrows on every hazard; hazard side only."""
+    d = ImageDraw.Draw(pil)
+    xform = viz_axes_transform(map_corners)
+    w, h = pil.size
+    font = _load_font(18, cjk_path)
+    groups = []  # (class, world_x, world_y): each parked car, cluster/zone centers
+    for e in placed:
+        if e["kind"] == "parked":
+            groups.append(("parked", e["x"], e["y"]))
+    centers = {}
+    for e in placed:
+        key = e.get("cluster_id") or e.get("zone_id")
+        if key:
+            centers.setdefault((key, e["kind"]), []).append((e["x"], e["y"]))
+    for (_key, kind), pts in centers.items():
+        groups.append((kind, float(np.mean([p[0] for p in pts])),
+                       float(np.mean([p[1] for p in pts]))))
+    for kind, wx, wy in groups:
+        cx, cy = viz_world_to_px(wx, wy, xform)
+        tx = min(cx + 26, w - 120)
+        ty = max(min(cy - 26, h - 40), min_y + 8)
+        d.line([(tx, ty), (cx, cy)], fill=(0, 0, 0), width=2)
+        vx, vy = cx - tx, cy - ty
+        norm = max(float(np.hypot(vx, vy)), 1e-6)
+        ux, uy = vx / norm, vy / norm
+        px_, py_ = -uy, ux
+        d.polygon([(cx, cy),
+                   (cx - ux * 12 + px_ * 5, cy - uy * 12 + py_ * 5),
+                   (cx - ux * 12 - px_ * 5, cy - uy * 12 - py_ * 5)], fill=(0, 0, 0))
+        en, zh = HAZARD_CLASS_LABELS[kind]
+        text = en + (f" {zh}" if cjk_path else "")
+        box = d.textbbox((tx + 4, ty - 9), text, font=font)
+        d.rectangle(box, fill=(255, 255, 255), outline=(0, 0, 0), width=1)
+        d.text((tx + 4, ty - 9), text, fill=(0, 0, 0), font=font)
+    return pil
+
+
+def render_viz_frame(scenario, step, mode, placed=None, map_corners=None,
+                     callouts=False, cjk_path=None):
+    """viz.plot_simulator_state + legend (+ hazard re-tint/callouts)."""
+    import pufferlib.viz as viz
+    img = viz.plot_simulator_state(scenario, step)
+    if img.shape[:2] != (VIZ_FIG_PX, VIZ_FIG_PX):
+        raise RuntimeError(
+            f"viz render is {img.shape[:2]}, expected {(VIZ_FIG_PX, VIZ_FIG_PX)}; "
+            "the world→px overlay transform must be re-derived")
+    pil = Image.fromarray(img)
+    pil, legend_bottom = draw_legend(pil, viz_legend_entries(mode), font_px=20, cjk_path=cjk_path)
+    if placed:
+        pil = overlay_hazards_on_viz(pil, placed, map_corners)
+        if callouts:
+            pil = add_hazard_callouts(pil, placed, map_corners, cjk_path, min_y=legend_bottom)
+    return pil
+
+
+def _ensure_image(src):
+    """Callers pass either a path or an already-rendered PIL frame."""
+    return src if isinstance(src, Image.Image) else Image.open(src)
+
+
 def crop_world(png_path, map_corners, center, window_m):
     """Crop a square world-space window out of a viz.plot_simulator_state PNG."""
-    img = np.asarray(Image.open(png_path))
+    img = np.asarray(_ensure_image(png_path))
     h, w = img.shape[:2]
     cx = (map_corners[0] + map_corners[2]) / 2
     cy = (map_corners[1] + map_corners[3]) / 2
@@ -883,7 +1201,7 @@ def crop_world(png_path, map_corners, center, window_m):
 
 
 def side_by_side(left_png, right_png, out_path, labels=("baseline", "static-hazards")):
-    a, b = Image.open(left_png), Image.open(right_png)
+    a, b = _ensure_image(left_png), _ensure_image(right_png)
     h = max(a.height, b.height)
     divider = 8
     canvas = Image.new("RGB", (a.width + b.width + divider, h), "white")
@@ -939,9 +1257,10 @@ def run_static_hazards(args, map_bin):
     for d in (baseline_dir, hazard_dir, compare_dir):
         d.mkdir(parents=True, exist_ok=True)
 
-    import pufferlib.viz as viz
     t_start = time.time()
     print(f"[hazard-demo] mode=static-hazards seed={args.seed} map={map_bin}")
+    cjk_font = detect_cjk_font()
+    print(f"[hazard-demo] CJK font: {cjk_font or 'none -> English-only labels (no tofu)'}")
 
     # ---- episode 1: hazards --------------------------------------------------
     slots = max(args.hazard_slots, 1)
@@ -993,16 +1312,21 @@ def run_static_hazards(args, map_bin):
             zone_centers.setdefault(key, []).append((e["x"], e["y"]))
 
     keyframe_paths = []
+    annotated_frames = {}  # COMPARE_KEYFRAMES step -> hazard frame with text callouts
     episode_end = None
     gif_frames = []
     collision_curve = []  # cumulative latched-collision agent count per step
 
     def render_keyframes(step):
         scenario = env.get_state()[0]
-        img = viz.plot_simulator_state(scenario, step)
+        pil = render_viz_frame(scenario, step, "static-hazards", placed=placed,
+                               map_corners=map_corners, cjk_path=cjk_font)
         path = hazard_dir / f"env0_t{step:03d}.png"
-        Image.fromarray(img).save(path)
+        pil.save(path)
         keyframe_paths.append(str(path.relative_to(seed_dir)))
+        if step in COMPARE_KEYFRAMES:  # callouts go to compare/zoom only, not keyframes
+            annotated_frames[step] = add_hazard_callouts(
+                pil.copy(), placed, map_corners, cjk_font)
 
     af0, ai0, mf0 = buffers["agent_f32"][0], buffers["agent_i32"][0], buffers["metrics_f32"][0]
     mask0 = env_active_mask(ai0)
@@ -1038,11 +1362,14 @@ def run_static_hazards(args, map_bin):
     env.close()
 
     gif_path = seed_dir / "hazard" / "hazard.gif"
+    static_class_of = {e["idx"]: e["kind"] for e in placed}
     gif_imgs = [
         render_gif_frame(step, af, ai, road_elements, traffic_elements, sdc_row,
                          center, HAZARD_GIF_WINDOW_M, 900, args.dt, args.seed,
                          map_bin.stem, mode_label="static-hazards",
-                         static_indices=static_indices)
+                         static_indices=static_indices, static_class_of=static_class_of,
+                         legend_entries=gif_legend_entries("static-hazards"),
+                         cjk_path=cjk_font)
         for step, af, ai in gif_frames
     ]
     if gif_imgs:
@@ -1070,9 +1397,9 @@ def run_static_hazards(args, map_bin):
 
     def render_keyframes_b(step):
         scenario = env_b.get_state()[0]
-        img = viz.plot_simulator_state(scenario, step)
+        pil = render_viz_frame(scenario, step, "baseline", cjk_path=cjk_font)
         path = baseline_dir / f"env0_t{step:03d}.png"
-        Image.fromarray(img).save(path)
+        pil.save(path)
         baseline_keyframes.append(str(path.relative_to(seed_dir)))
 
     render_keyframes_b(0)
@@ -1100,9 +1427,10 @@ def run_static_hazards(args, map_bin):
     missing = []
     for t in COMPARE_KEYFRAMES:
         b_png = baseline_dir / f"env0_t{t:03d}.png"
-        h_png = hazard_dir / f"env0_t{t:03d}.png"
-        if b_png.is_file() and h_png.is_file():
-            side_by_side(b_png, h_png, compare_dir / f"compare_t{t:03d}.png")
+        h_frame = annotated_frames.get(t)
+        if b_png.is_file() and h_frame is not None:
+            # right panel already carries hazard class colors + text callouts
+            side_by_side(b_png, h_frame, compare_dir / f"compare_t{t:03d}.png")
         else:
             missing.append(t)
     zooms = []
@@ -1110,18 +1438,17 @@ def run_static_hazards(args, map_bin):
         ctr = tuple(np.mean(np.array(pts), axis=0))
         for t in (0, 40):
             b_png = baseline_dir / f"env0_t{t:03d}.png"
-            h_png = hazard_dir / f"env0_t{t:03d}.png"
-            if not (b_png.is_file() and h_png.is_file()):
-                continue
-            b_crop = compare_dir / f"_b_{key}_t{t:03d}.png"
-            h_crop = compare_dir / f"_h_{key}_t{t:03d}.png"
-            crop_world(b_png, map_corners, ctr, ZOOM_WINDOW_M).save(b_crop)
-            crop_world(h_png, map_corners, ctr, ZOOM_WINDOW_M).save(h_crop)
-            zoom_name = f"zoom_{key}_t{t:03d}.png"
-            side_by_side(b_crop, h_crop, compare_dir / zoom_name)
-            b_crop.unlink()
-            h_crop.unlink()
-            zooms.append(f"compare/{zoom_name}")
+            h_frame = annotated_frames.get(t)
+            if b_png.is_file() and h_frame is not None:
+                b_crop = compare_dir / f"_b_{key}_t{t:03d}.png"
+                h_crop = compare_dir / f"_h_{key}_t{t:03d}.png"
+                crop_world(b_png, map_corners, ctr, ZOOM_WINDOW_M).save(b_crop)
+                crop_world(h_frame, map_corners, ctr, ZOOM_WINDOW_M).save(h_crop)
+                zoom_name = f"zoom_{key}_t{t:03d}.png"
+                side_by_side(b_crop, h_crop, compare_dir / zoom_name)
+                b_crop.unlink()
+                h_crop.unlink()
+                zooms.append(f"compare/{zoom_name}")
 
     window = min(hazard_metrics["steps_run"], baseline_metrics["steps_run"])
     coll_h = collision_curve[window - 1] if window else 0
@@ -1152,7 +1479,9 @@ def run_static_hazards(args, map_bin):
         "静态 hazard 走 cosim_partner_slots 静态槽 + set_agent_states/set_agent_sizes 放置，零内核改动。",
         "binding 限制：vec_set_agent_states/sizes 只写 vec->envs[0]（cosim 单 env 假设）→ 本模式固定 --envs 1。",
         "同 seed 保证相同地图与初始撒车布局；hazard 引入后微观轨迹自然分叉（碰撞/绕行）。",
-        "橙色 = 静态 hazard（GIF）；keyframe 渲染里静态车为灰色（viz inactive 色）；锥桶 0.5m 全图比例下较小，看 zoom_*。",
+        "图例：所有 PNG/GIF 左上角，逐项对应实际渲染（PNG=pufferlib/viz.py 语义，GIF=脚本渲染器语义，含斑马线）。",
+        "hazard 三类配色：深蓝 parked、暗红碰撞簇（重叠有意）、橙色锥桶（全图以菱形标记保证可见）；"
+        "compare/zoom 的 hazard 侧另有文字+箭头指认，baseline 侧无标注。",
         "碰撞簇内部重叠是有意的；簇整体与其他 agent/edge 无重叠（OBB SAT + 内核 lane 关联双重校验）。",
         "lane 宽度 map bin 未暴露，横向偏移按 carla 默认 3.5m 假设；内核 current_lane_idx != -1 为在道证据。",
         "kernel_lane_assoc_failures 口径：贴边锥桶（box 跨 road edge 或超 3×width=1.5m 关联半径）在内核"
@@ -1256,6 +1585,15 @@ def write_root_artifacts(root, seed_summaries):
   <h1>M1 static hazards · parked / collided clusters / construction cones</h1>
   <p>命令: <code>PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py --mode static-hazards --seed &lt;42|43|44&gt;</code></p>
   <img src="counts_histogram.png" width="560"/>
+  <h2>图例（与渲染逐项对应）</h2>
+  <ul>
+    <li>hazard 三类：<span style="color:#0D1F8C"><b>■ parked（深蓝）</b></span> ·
+        <span style="color:#8B0000"><b>■ 碰撞簇 cluster（暗红，重叠有意）</b></span> ·
+        <span style="color:#FF8C00"><b>◆ 锥桶 cones（橙，全图以菱形标记）</b></span>；每张 PNG/GIF 左上角有完整图例框。</li>
+    <li>车辆（PNG=viz 语义）：18 色板按 agent id；违规锁停=纯红；目标=同色点 + 2 m 虚线圆环；
+        信号灯停止线=红/黄/绿/灰；停车牌=黑+红虚线；车道浅灰、标线灰虚线、边线黑。</li>
+    <li>GIF 另有：SDC=红、锁停=灰、斑马线浅绿；compare/zoom 的 hazard 侧带文字+箭头标注，baseline 侧无标注。</li>
+  </ul>
   <h2>放置计数 / 合法性 / 碰撞率变化</h2>
   <table><tr><th>seed</th><th>parked</th><th>collided</th><th>cone zones</th><th>rejects</th><th>legality</th><th>collision agents (baseline→hazard)</th></tr>
   {rows}</table>
@@ -1282,6 +1620,8 @@ def main():
 
     map_bin = resolve_map_bin(args.map_dir, args.map)
     print(f"[hazard-demo] mode={args.mode} seed={args.seed} map={map_bin}")
+    cjk_font = detect_cjk_font()
+    print(f"[hazard-demo] CJK font: {cjk_font or 'none -> English-only labels (no tofu)'}")
 
     env = build_env(args, map_bin)
     print(f"[hazard-demo] env: {env.num_envs} sub-envs x {args.agents_per_env} agents")
@@ -1317,12 +1657,12 @@ def main():
             if episode_end[e] is not None:
                 continue  # episode already auto-reset; the snapshot would show a new episode
             scenario = env.get_state()[e]
-            img = viz.plot_simulator_state(scenario, step)
+            pil = render_viz_frame(scenario, step, "baseline", cjk_path=cjk_font)
             path = frames_dir / f"env{e}_t{step:03d}.png"
-            Image.fromarray(img).save(path)
+            pil.save(path)
             keyframe_paths[e].append(str(path.relative_to(out_dir)))
 
-    import pufferlib.viz as viz  # upstream renderer for keyframes
+    import pufferlib.viz as viz  # upstream renderer for keyframes (via render_viz_frame)
 
     keyframe_paths = {e: [] for e in range(env.num_envs)}
     capture_frame()
@@ -1377,6 +1717,7 @@ def main():
         render_gif_frame(
             step, af, ai, road_elements, traffic_elements, sdc_rows[gif_env],
             center, args.gif_window_m, 900, args.dt, args.seed, map_bin.stem,
+            legend_entries=gif_legend_entries("baseline"), cjk_path=cjk_font,
         )
         for step, af, ai in gif_frames
     ]

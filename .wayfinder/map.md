@@ -22,6 +22,7 @@
 - [复刻范围与验收口径：能力矩阵、验收标准、算力包线](tickets/05-复刻范围与验收口径.md)：能力包 = 场景生成层 + 零演示配方 + sim-agent（吞吐出界）；验收 = 内部优先 + 外部榜单为辅；算力 = 单服务器 GPU（1e9–1e10 步）。
 - [基线导入执行：3.0 历史进 Slipstream master + 工程约定初始化](tickets/11-基线导入执行.md)：已执行——拉最新上游后基线 = `3.0@2c1ca3e4`（比 80a681b4 新 6 提交：Longest6v1/Alpasim eval、overspeed reward 调整）；保留全历史；tag `baseline/pufferdrive-3.0-2c1ca3e4`；资产/strata 两提交（a920284、0ebd01d）。
 - [hazard 生成器最小原型](tickets/07-hazard生成器最小原型.md)：M0-M3 全验收——四模式 demo（baseline/static/jaywalker/mix）+ YAML 旋钮 + 32 tests + 回归双门像素级；内核零改动（Python 侧放置/步进）；锚点 200/31/0；内核子系统化入雾区。
+- [评测资产就位](tickets/09-评测资产就位.md)：InterPlan=Apache-2.0 已就位（80+335 场景，缺 nuPlan 数据）；**val14 新发现：基线自带 MIT 官方闭环栈（cosim/nuplan），推翻 AGPL 前提**（05 票已修正）；E1a/E1b 依赖清单：公共 7 具备/4 缺/3 阻塞，E1a 另缺 Nova 权重。
 
 ## Not yet specified
 

@@ -22,7 +22,11 @@ As-of: adb8dc3
 
 ## Next（执行清单，2026-11-05 地图完成后移交，按优先级）
 
-1. **hazard 内核子系统化**：C 侧内生放置（原型→生产）+ 脚本横穿者内核化（票 08）+ 真值配时开关（票 06）+ 规则执法三补丁（红灯 footprint 扫越/停牌 dwell 采样/行人豁免 gate，见 rule-enforcement-checklist）。
+1. **hazard 内核子系统化**（K 系列，验收纪律同票 07 长期标准）：
+   - **K1 内核静态放置**：parked/簇/锥桶移入 C reset 路径，env config 驱动（init 前校验/热路径零 malloc）；验收 = `--placement kernel` 产出同款渲染产物 + 合法性 0 违例 + C 测试绿 + python 路径回归逐位不变。
+   - **K2 内核脚本行人**：walker 由内核驱动（unicycle 步进+班次）；验收 = M2 同款度量（横穿率/最小距离/接触）从纯 env 产出。
+   - **K3 配时开关 + 执法三补丁**：真值配时保真开关（bin states 生效）；红灯 footprint 扫越/停牌 dwell 采样/行人豁免 gate；验收 = 单测 + 行为差异数字（违规计数前后对比）。
+   - **K4 训练就绪整合**：hazard 旋钮进 puffer_drive.yaml + 全量回归 + **PPO 短跑 smoke（1e6 步 reward 曲线图，hazard 开/关对比）**——zero-to-one 的第一信号。
 2. **零演示 RL 主轴训练 run**：progress shaping 补齐 + 评测期条件化 + 既有 reward conditioning；混合对手旋钮保留非默认。
 3. **异质 sim-agent 线**：骑行者 bicycle 网格 + 卡车分布扩展 + per-type heads（65K 轻量线起点，WOSAC 角色）。
 4. **外部验收**：nuPlan 数据获取（license 核验）→ 仓内 cosim/nuplan 栈跑通 val14 → InterPlan 接入。

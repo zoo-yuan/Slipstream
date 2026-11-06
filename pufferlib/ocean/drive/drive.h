@@ -173,6 +173,30 @@ struct Drive {
     Agent *agents;
     int num_controllable_agents;
     int cosim_partner_slots; // gigaflow co-sim: static slots owned by the external sim (never spawned/stepped)
+    // K1 in-kernel static hazard placement: fills static slots at reset (parked / collision clusters / cones).
+    // hazard_enable=false consumes no RNG draws, so the episode stream is bit-identical to a hazard-free env.
+    int hazard_enable;
+    int hazard_parked_enable;
+    int hazard_parked_n_lo;
+    int hazard_parked_n_hi;
+    float hazard_parked_size_weights[HAZARD_PRESET_COUNT]; // car, bus, truck; normalized to sum 1 at init
+    int hazard_clusters_enable;
+    int hazard_clusters_n_lo;
+    int hazard_clusters_n_hi;
+    int hazard_clusters_layout; // HAZARD_CLUSTER_LAYOUT_BOTH / _REAR_END / _T_BONE
+    int hazard_cones_enable;
+    int hazard_cones_zones_lo;
+    int hazard_cones_zones_hi;
+    int hazard_cones_taper_cones;
+    int hazard_cones_block_rows;
+    int hazard_cones_block_cols;
+    float hazard_cones_spacing_m;
+    float hazard_cones_taper_prob;
+    // Last-reset placement counts (diagnostics/tests); reset before every placement attempt.
+    int hazard_placed_parked;
+    int hazard_placed_cluster_cars;
+    int hazard_placed_cones;
+    int hazard_reject_no_slot; // placements dropped because static slots ran out (config under-budgets)
     int active_agent_count;
     int *active_agent_indices;
     int num_total_agents;
@@ -4101,6 +4125,509 @@ static void refresh_lane_association(Drive *env, Agent *agent) {
     agent->lane_curvature = compute_lane_curvature(&env->road_elements[lane_idx], lane_seg_idx);
 }
 
+// =====================================================================================
+// K1: in-kernel static hazard placement (parked / collision clusters / cones)
+//
+// Port of the accepted Python prototype (scripts/hazard_demo.py M1 tables,
+// config/hazard_demo.yaml semantics): during c_reset - after the dynamic
+// gigaflow spawns - accepted poses are committed into the static co-sim
+// partner slots (CONTROLLER_STATIC, never spawned or stepped). Reset path
+// only: nothing here runs in c_step, so the hot path stays malloc-free.
+// Legality mirrors the kernel spawn rules: OBB overlap via check_obb_collision
+// (cluster members exempt - their overlap is intentional), road-edge crossing
+// via check_spawn_offroad, kernel lane association via refresh_lane_association.
+// RNG = env->rng_state (the episode-seeded stream shared with the dynamic
+// spawns), so one episode seed reproduces the full layout.
+// =====================================================================================
+
+typedef struct {
+    int element_idx;
+    float total;  // lane length (RoadMapElement.length)
+    int straight; // every per-segment heading delta within HAZARD_LANE_STRAIGHT_MAX_RAD
+} HazardLane;
+
+typedef struct {
+    int lane_element_idx; // parked-spacing bookkeeping (-1 = none)
+    float s;              // arclength of the pose along its lane
+    float length;
+} HazardParkedRecord;
+
+// Candidate drivable lanes for hazard anchoring (kernel drivable = types 1-2).
+static int hazard_scan_lanes(const Drive *env, HazardLane *out, int cap) {
+    int count = 0;
+    for (int i = 0; i < env->num_road_elements && count < cap; i++) {
+        const RoadMapElement *element = &env->road_elements[i];
+        if (!is_drivable_road_lane(element->type) || element->segment_size < HAZARD_LANE_MIN_POINTS
+            || element->length < HAZARD_LANE_MIN_LEN_M) {
+            continue;
+        }
+        int straight = 1;
+        for (int k = 0; k + 1 < element->segment_size - 1; k++) {
+            if (fabsf(normalize_heading(element->headings[k + 1] - element->headings[k]))
+                > HAZARD_LANE_STRAIGHT_MAX_RAD) {
+                straight = 0;
+                break;
+            }
+        }
+        out[count].element_idx = i;
+        out[count].total = element->length;
+        out[count].straight = straight;
+        count++;
+    }
+    return count;
+}
+
+// Weighted lane draw (weight = total - min_len + 1), mirroring the prototype's LaneIndex.pick.
+static int hazard_pick_lane(
+    const HazardLane *lanes,
+    int lane_count,
+    Rng *rng,
+    float min_len_m,
+    int straight_only) {
+    float weight_sum = 0.0f;
+    for (int i = 0; i < lane_count; i++) {
+        if (lanes[i].total >= min_len_m && (!straight_only || lanes[i].straight)) {
+            weight_sum += lanes[i].total - min_len_m + 1.0f;
+        }
+    }
+    if (!(weight_sum > 0.0f)) {
+        return -1;
+    }
+    float pick = sample_uniform(rng, 0.0f, weight_sum);
+    for (int i = 0; i < lane_count; i++) {
+        if (lanes[i].total < min_len_m || (straight_only && !lanes[i].straight)) {
+            continue;
+        }
+        pick -= lanes[i].total - min_len_m + 1.0f;
+        if (pick < 0.0f) {
+            return i;
+        }
+    }
+    return lane_count - 1; // float round-off guard
+}
+
+// World pose at arclength s (clamped) offset `lateral` left of the lane polyline.
+static void hazard_pose_at(
+    const RoadMapElement *lane,
+    float s,
+    float lateral,
+    float *x,
+    float *y,
+    float *z,
+    float *heading) {
+    if (s < 0.0f) {
+        s = 0.0f;
+    }
+    if (s > lane->length) {
+        s = lane->length;
+    }
+    int i = 0;
+    while (i < lane->segment_size - 2 && lane->cum_lengths[i + 1] < s) {
+        i++;
+    }
+    float seg_len = lane->cum_lengths[i + 1] - lane->cum_lengths[i];
+    float t = seg_len > 1e-9f ? (s - lane->cum_lengths[i]) / seg_len : 0.0f;
+    if (t < 0.0f) {
+        t = 0.0f;
+    }
+    if (t > 1.0f) {
+        t = 1.0f;
+    }
+    *x = lane->x[i] * (1.0f - t) + lane->x[i + 1] * t - sinf(lane->headings[i]) * lateral;
+    *y = lane->y[i] * (1.0f - t) + lane->y[i + 1] * t + cosf(lane->headings[i]) * lateral;
+    *z = lane->z[i] * (1.0f - t) + lane->z[i + 1] * t;
+    *heading = lane->headings[i];
+}
+
+static Agent hazard_make_agent(float x, float y, float z, float heading, float length, float width) {
+    Agent agent = {0};
+    agent.sim_x = x;
+    agent.sim_y = y;
+    agent.sim_z = z;
+    agent.sim_heading = heading;
+    agent.cos_heading = cosf(heading);
+    agent.sin_heading = sinf(heading);
+    // Static pose: prev == curr keeps every swept check degenerate-static, like spawn poses.
+    copy_pose_to_prev(&agent);
+    agent.sim_length = length;
+    agent.sim_width = width;
+    agent.sim_height = COSIM_PARTNER_DEFAULT_HEIGHT_M;
+    agent.wheelbase = 0.6f * length;
+    update_agent_radius(&agent);
+    return agent;
+}
+
+// OBB overlap against every valid agent (dynamics + already-committed hazards),
+// with the candidate padded by HAZARD_CONFLICT_MARGIN_M (prototype margin).
+// `exempt` lists agent indices skipped by the check (the other cluster member).
+static bool hazard_pose_conflicts(Drive *env, const Agent *cand, const int *exempt, int exempt_count) {
+    Agent inflated = *cand;
+    inflated.sim_length += 2.0f * HAZARD_CONFLICT_MARGIN_M;
+    inflated.sim_width += 2.0f * HAZARD_CONFLICT_MARGIN_M;
+    update_agent_radius(&inflated);
+
+    for (int i = 0; i < env->num_total_agents; i++) {
+        int is_exempt = 0;
+        for (int k = 0; k < exempt_count; k++) {
+            if (exempt[k] == i) {
+                is_exempt = 1;
+                break;
+            }
+        }
+        if (is_exempt) {
+            continue;
+        }
+        Agent *other = &env->agents[i];
+        if (other->sim_x == INVALID_POSITION || other->sim_valid != 1) {
+            continue;
+        }
+        float dx = other->sim_x - cand->sim_x;
+        float dy = other->sim_y - cand->sim_y;
+        float max_overlap_dist = inflated.radius + other->radius;
+        if (dx * dx + dy * dy > max_overlap_dist * max_overlap_dist) {
+            continue;
+        }
+        if (check_obb_collision(&inflated, other)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void hazard_commit_agent(Drive *env, int agent_idx, const Agent *pose) {
+    Agent *agent = &env->agents[agent_idx];
+    agent->sim_x = pose->sim_x;
+    agent->sim_y = pose->sim_y;
+    agent->sim_z = pose->sim_z;
+    agent->sim_heading = pose->sim_heading;
+    agent->cos_heading = pose->cos_heading;
+    agent->sin_heading = pose->sin_heading;
+    copy_pose_to_prev(agent);
+    agent->sim_length = pose->sim_length;
+    agent->sim_width = pose->sim_width;
+    agent->sim_height = pose->sim_height;
+    agent->radius = pose->radius;
+    agent->wheelbase = pose->wheelbase;
+    clear_agent_motion(agent);
+    update_agent_speed(agent);
+    agent->sim_valid = 1;
+    agent->removed = 0;
+    agent->stopped = 0;
+    agent->seconds_stopped = 0.0f;
+    agent->steering_angle = 0.0f;
+    agent->type = VEHICLE;
+    agent->controller = CONTROLLER_STATIC;
+    refresh_lane_association(env, agent); // current_lane_idx = on-lane evidence for audits
+}
+
+static int hazard_pick_preset(Drive *env) {
+    float pick = sample_uniform(&env->rng_state, 0.0f, 1.0f);
+    float acc = 0.0f;
+    for (int i = 0; i < HAZARD_PRESET_COUNT; i++) {
+        acc += env->hazard_parked_size_weights[i];
+        if (pick < acc) {
+            return i;
+        }
+    }
+    return HAZARD_PRESET_COUNT - 1;
+}
+
+static int hazard_draw_count(Drive *env, int lo, int hi) {
+    // inclusive [lo, hi], mirroring prototype rng.randint(lo, hi + 1)
+    return lo + rng_below(&env->rng_state, hi - lo + 1);
+}
+
+static void place_static_hazards(Drive *env) {
+    env->hazard_placed_parked = 0;
+    env->hazard_placed_cluster_cars = 0;
+    env->hazard_placed_cones = 0;
+    env->hazard_reject_no_slot = 0;
+    if (!env->hazard_enable || env->simulation_mode != SIMULATION_MODE_GIGAFLOW
+        || env->cosim_partner_slots <= 0 || env->agents == NULL) {
+        return;
+    }
+
+    // Take ownership of every static slot for this episode: a stale pose from an
+    // earlier episode must never leak into the new layout.
+    for (int k = 0; k < env->cosim_partner_slots; k++) {
+        invalidate_agent(&env->agents[env->static_agent_indices[k]]);
+    }
+
+    HazardLane *lanes = (HazardLane *) malloc((size_t) env->num_road_elements * sizeof(HazardLane));
+    HazardParkedRecord *parked_records
+        = (HazardParkedRecord *) malloc((size_t) (env->hazard_parked_n_hi + 1) * sizeof(HazardParkedRecord));
+    if (lanes == NULL || parked_records == NULL) {
+        free(lanes);
+        free(parked_records);
+        return; // allocation failure degrades to a hazard-free episode, never a broken reset
+    }
+    int lane_count = hazard_scan_lanes(env, lanes, env->num_road_elements);
+    int parked_record_count = 0;
+    int slot_cursor = 0; // next free static slot offset; agent idx = num_controllable_agents + slot_cursor
+    const int first_slot_agent = env->num_controllable_agents;
+    const int max_slots = env->cosim_partner_slots;
+    int exempt[1];
+
+    // --- parked vehicles: lane-anchored, kerbside half-on-road, heading-aligned ---
+    if (env->hazard_parked_enable) {
+        int want = hazard_draw_count(env, env->hazard_parked_n_lo, env->hazard_parked_n_hi);
+        for (int n = 0; n < want; n++) {
+            int committed = 0;
+            for (int attempt = 0; attempt < HAZARD_MAX_PLACE_ATTEMPTS && !committed; attempt++) {
+                int preset = hazard_pick_preset(env);
+                float length = HAZARD_PRESET_LENGTH_M[preset];
+                float width = HAZARD_PRESET_WIDTH_M[preset];
+                int li = hazard_pick_lane(lanes, lane_count, &env->rng_state, length + 10.0f, 0);
+                if (li < 0) {
+                    break; // no candidate lane fits this preset: give up on this car
+                }
+                const HazardLane *lane = &lanes[li];
+                float s = sample_uniform(
+                    &env->rng_state, length / 2.0f + 2.0f, lane->total - length / 2.0f - 2.0f);
+                float side = sample_uniform(&env->rng_state, 0.0f, 1.0f) < 0.5f ? 1.0f : -1.0f;
+                float lateral = side
+                    * sample_uniform(&env->rng_state, HAZARD_PARKED_LATERAL_MIN_M, HAZARD_PARKED_LATERAL_MAX_M);
+                float x, y, z, heading;
+                hazard_pose_at(&env->road_elements[lane->element_idx], s, lateral, &x, &y, &z, &heading);
+
+                // bumper-to-bumper spacing against parked cars already on this lane
+                int spacing_conflict = 0;
+                for (int r = 0; r < parked_record_count; r++) {
+                    if (parked_records[r].lane_element_idx != lane->element_idx) {
+                        continue;
+                    }
+                    float gap_needed = (length + parked_records[r].length) / 2.0f + HAZARD_PARKED_SPACING_GAP_M;
+                    if (fabsf(s - parked_records[r].s) < gap_needed) {
+                        spacing_conflict = 1;
+                        break;
+                    }
+                }
+                if (spacing_conflict) {
+                    continue;
+                }
+                Agent candidate = hazard_make_agent(x, y, z, heading, length, width);
+                if (hazard_pose_conflicts(env, &candidate, exempt, 0)) {
+                    continue;
+                }
+                if (check_spawn_offroad(env, &candidate, HAZARD_EDGE_CLEARANCE_M)) {
+                    continue;
+                }
+                if (slot_cursor >= max_slots) {
+                    env->hazard_reject_no_slot++;
+                    break;
+                }
+                hazard_commit_agent(env, first_slot_agent + slot_cursor, &candidate);
+                parked_records[parked_record_count].lane_element_idx = lane->element_idx;
+                parked_records[parked_record_count].s = s;
+                parked_records[parked_record_count].length = length;
+                parked_record_count++;
+                slot_cursor++;
+                env->hazard_placed_parked++;
+                committed = 1;
+            }
+        }
+    }
+
+    // --- collision clusters: two deliberately overlapping cars; intra-cluster
+    // overlap is intentional, so the buddy slot is exempt from the overlap check
+    if (env->hazard_clusters_enable) {
+        int want = hazard_draw_count(env, env->hazard_clusters_n_lo, env->hazard_clusters_n_hi);
+        for (int c = 0; c < want; c++) {
+            int committed = 0;
+            for (int attempt = 0; attempt < HAZARD_MAX_PLACE_ATTEMPTS && !committed; attempt++) {
+                int preset_a = hazard_pick_preset(env);
+                int preset_b = hazard_pick_preset(env);
+                float len_a = HAZARD_PRESET_LENGTH_M[preset_a];
+                float wid_a = HAZARD_PRESET_WIDTH_M[preset_a];
+                float len_b = HAZARD_PRESET_LENGTH_M[preset_b];
+                float wid_b = HAZARD_PRESET_WIDTH_M[preset_b];
+                float min_len = fmaxf(25.0f, len_a + len_b + 12.0f);
+                int li = hazard_pick_lane(lanes, lane_count, &env->rng_state, min_len, 1);
+                if (li < 0) {
+                    break; // no straight lane fits: give up on this cluster
+                }
+                const HazardLane *lane = &lanes[li];
+                const RoadMapElement *element = &env->road_elements[lane->element_idx];
+
+                int pattern = env->hazard_clusters_layout;
+                if (pattern == HAZARD_CLUSTER_LAYOUT_BOTH) {
+                    pattern = sample_uniform(&env->rng_state, 0.0f, 1.0f) < 0.5f ? HAZARD_CLUSTER_LAYOUT_REAR_END
+                                                                                 : HAZARD_CLUSTER_LAYOUT_T_BONE;
+                }
+                float s_a = sample_uniform(&env->rng_state, 8.0f, lane->total - 8.0f);
+                float x_a, y_a, z_a, h_a;
+                hazard_pose_at(
+                    element, s_a, sample_uniform(&env->rng_state, -0.2f, 0.2f), &x_a, &y_a, &z_a, &h_a);
+                float x_b, y_b, h_b;
+                if (pattern == HAZARD_CLUSTER_LAYOUT_REAR_END) {
+                    float overlap_m = sample_uniform(&env->rng_state, 0.5f, 1.0f);
+                    hazard_pose_at(
+                        element,
+                        s_a - (len_a / 2.0f + len_b / 2.0f - overlap_m),
+                        sample_uniform(&env->rng_state, -0.15f, 0.15f),
+                        &x_b,
+                        &y_b,
+                        &z_a,
+                        &h_b);
+                    h_b = normalize_heading(h_b + sample_uniform(&env->rng_state, -0.05f, 0.05f));
+                } else {
+                    float sign = sample_uniform(&env->rng_state, 0.0f, 1.0f) < 0.5f ? 1.0f : -1.0f;
+                    h_b = normalize_heading(h_a + sign * sample_uniform(&env->rng_state, 1.35f, 1.75f));
+                    float u_a_x = cosf(h_a), u_a_y = sinf(h_a);
+                    float u_b_x = cosf(h_b), u_b_y = sinf(h_b);
+                    float cx = x_a + u_a_x * (0.35f * len_a) - u_b_x * (0.30f * len_b);
+                    float cy = y_a + u_a_y * (0.35f * len_a) - u_b_y * (0.30f * len_b);
+                    // pull the center toward A until the intentional overlap holds
+                    for (int shrink = 0; shrink < 6; shrink++) {
+                        Agent probe_a = hazard_make_agent(x_a, y_a, z_a, h_a, len_a, wid_a);
+                        Agent probe_b = hazard_make_agent(cx, cy, z_a, h_b, len_b, wid_b);
+                        if (check_obb_collision(&probe_a, &probe_b)) {
+                            break;
+                        }
+                        float dx = cx - x_a;
+                        float dy = cy - y_a;
+                        float dist = sqrtf(dx * dx + dy * dy);
+                        if (dist < 1e-3f) {
+                            cx = x_a;
+                            cy = y_a;
+                            break;
+                        }
+                        cx -= dx / dist * 0.3f;
+                        cy -= dy / dist * 0.3f;
+                    }
+                    x_b = cx;
+                    y_b = cy;
+                }
+                Agent agent_a = hazard_make_agent(x_a, y_a, z_a, h_a, len_a, wid_a);
+                Agent agent_b = hazard_make_agent(x_b, y_b, z_a, h_b, len_b, wid_b);
+                if (!check_obb_collision(&agent_a, &agent_b)) {
+                    continue; // intentional overlap must hold (prototype cluster_overlap_failed)
+                }
+                if (hazard_pose_conflicts(env, &agent_a, exempt, 0)
+                    || check_spawn_offroad(env, &agent_a, HAZARD_EDGE_CLEARANCE_M)) {
+                    continue;
+                }
+                exempt[0] = first_slot_agent + slot_cursor; // slot A commits next: exempt it for B
+                if (hazard_pose_conflicts(env, &agent_b, exempt, 1)
+                    || check_spawn_offroad(env, &agent_b, HAZARD_EDGE_CLEARANCE_M)) {
+                    continue;
+                }
+                if (slot_cursor + 2 > max_slots) {
+                    env->hazard_reject_no_slot += 2;
+                    break;
+                }
+                hazard_commit_agent(env, first_slot_agent + slot_cursor, &agent_a);
+                hazard_commit_agent(env, first_slot_agent + slot_cursor + 1, &agent_b);
+                slot_cursor += 2;
+                env->hazard_placed_cluster_cars += 2;
+                committed = 1;
+            }
+        }
+    }
+
+    // --- construction cones: taper (diagonal narrowing) or block (full closure) ---
+    if (env->hazard_cones_enable) {
+        int want = hazard_draw_count(env, env->hazard_cones_zones_lo, env->hazard_cones_zones_hi);
+        int max_cones_per_zone
+            = env->hazard_cones_taper_cones > env->hazard_cones_block_rows * env->hazard_cones_block_cols
+            ? env->hazard_cones_taper_cones
+            : env->hazard_cones_block_rows * env->hazard_cones_block_cols;
+        float cone_xs[64];
+        float cone_ys[64];
+        float cone_zs[64];
+        float cone_hs[64];
+        if (max_cones_per_zone > 64) {
+            max_cones_per_zone = 64; // stack budget guard; init validation rejects larger configs
+        }
+        for (int zi = 0; zi < want; zi++) {
+            int committed = 0;
+            for (int attempt = 0; attempt < HAZARD_MAX_PLACE_ATTEMPTS && !committed; attempt++) {
+                int li = hazard_pick_lane(lanes, lane_count, &env->rng_state, 20.0f, 1);
+                if (li < 0) {
+                    break; // no straight lane fits: give up on this zone
+                }
+                const HazardLane *lane = &lanes[li];
+                const RoadMapElement *element = &env->road_elements[lane->element_idx];
+                int taper = sample_uniform(&env->rng_state, 0.0f, 1.0f) < env->hazard_cones_taper_prob;
+                int cone_count = 0;
+                if (taper) {
+                    int n = env->hazard_cones_taper_cones;
+                    float span = (float) (n - 1) * env->hazard_cones_spacing_m;
+                    float base_s = sample_uniform(&env->rng_state, 4.0f, fmaxf(4.1f, lane->total - span - 4.0f));
+                    float side = sample_uniform(&env->rng_state, 0.0f, 1.0f) < 0.5f ? 1.0f : -1.0f;
+                    float lat0 = side * sample_uniform(&env->rng_state, 0.2f, 0.5f);
+                    float lat1 = side * sample_uniform(&env->rng_state, 1.1f, 1.4f);
+                    for (int k = 0; k < n && cone_count < max_cones_per_zone; k++) {
+                        float frac = n > 1 ? (float) k / (float) (n - 1) : 0.0f;
+                        float lat = lat0 * (1.0f - frac) + lat1 * frac;
+                        lat += sample_uniform(&env->rng_state, -0.05f, 0.05f);
+                        float s = base_s + (float) k * env->hazard_cones_spacing_m;
+                        hazard_pose_at(
+                            element, s, lat, &cone_xs[cone_count], &cone_ys[cone_count], &cone_zs[cone_count],
+                            &cone_hs[cone_count]);
+                        cone_count++;
+                    }
+                } else {
+                    float half_lane = HAZARD_ASSUMED_LANE_WIDTH_M / 2.0f - 0.35f;
+                    if (half_lane > HAZARD_CONE_BLOCK_LAT_MAX_M) {
+                        half_lane = HAZARD_CONE_BLOCK_LAT_MAX_M;
+                    }
+                    float base_s = sample_uniform(&env->rng_state, 4.0f, fmaxf(4.1f, lane->total - 9.0f));
+                    float stagger = (2.0f * half_lane) / (float) (env->hazard_cones_block_cols - 1) / 2.0f;
+                    for (int row = 0; row < env->hazard_cones_block_rows; row++) {
+                        float row_s = base_s + (float) row * (env->hazard_cones_spacing_m + 0.1f)
+                            + sample_uniform(&env->rng_state, -0.1f, 0.1f);
+                        for (int col = 0; col < env->hazard_cones_block_cols && cone_count < max_cones_per_zone;
+                             col++) {
+                            float lat = -half_lane
+                                + 2.0f * half_lane * (float) col / (float) (env->hazard_cones_block_cols - 1);
+                            lat += row > 0 ? stagger : 0.0f;
+                            if (lat > HAZARD_CONE_BLOCK_LAT_MAX_M) {
+                                lat = HAZARD_CONE_BLOCK_LAT_MAX_M;
+                            }
+                            if (lat < -HAZARD_CONE_BLOCK_LAT_MAX_M) {
+                                lat = -HAZARD_CONE_BLOCK_LAT_MAX_M;
+                            }
+                            lat += sample_uniform(&env->rng_state, -0.05f, 0.05f);
+                            hazard_pose_at(
+                                element, row_s, lat, &cone_xs[cone_count], &cone_ys[cone_count],
+                                &cone_zs[cone_count], &cone_hs[cone_count]);
+                            cone_count++;
+                        }
+                    }
+                }
+
+                int zone_ok = cone_count > 0;
+                for (int k = 0; k < cone_count && zone_ok; k++) {
+                    Agent cone = hazard_make_agent(
+                        cone_xs[k], cone_ys[k], cone_zs[k], cone_hs[k], HAZARD_CONE_SIZE_M, HAZARD_CONE_SIZE_M);
+                    if (hazard_pose_conflicts(env, &cone, exempt, 0) || check_spawn_offroad(env, &cone, HAZARD_EDGE_CLEARANCE_M)) {
+                        zone_ok = 0;
+                    }
+                }
+                if (!zone_ok) {
+                    continue;
+                }
+                if (slot_cursor + cone_count > max_slots) {
+                    env->hazard_reject_no_slot += cone_count;
+                    break;
+                }
+                for (int k = 0; k < cone_count; k++) {
+                    Agent cone = hazard_make_agent(
+                        cone_xs[k], cone_ys[k], cone_zs[k], cone_hs[k], HAZARD_CONE_SIZE_M, HAZARD_CONE_SIZE_M);
+                    hazard_commit_agent(env, first_slot_agent + slot_cursor, &cone);
+                    slot_cursor++;
+                    env->hazard_placed_cones++;
+                }
+                committed = 1;
+            }
+        }
+    }
+
+    free(lanes);
+    free(parked_records);
+}
+
 // ── Co-simulation external-state setters ─────────────────────────────────────
 // Co-sim setters return 0 on success, -1 on invalid external input (the binding raises).
 int c_set_agent_states(
@@ -5590,6 +6117,7 @@ void c_reset(Drive *env) {
             sample_erratic_flags(env, &env->agents[agent_idx]);
             compute_metrics(env, agent_idx, x);
         }
+        place_static_hazards(env);
         update_rollout_masks(env);
         compute_observations(env);
         return;
@@ -5642,6 +6170,7 @@ void c_reset(Drive *env) {
             compute_metrics(env, agent_idx, x);
             env->logs[x].stopped_at_reset = agent->stopped ? 1.0f : 0.0f;
         }
+        place_static_hazards(env);
         update_rollout_masks(env);
         compute_observations(env);
         return;

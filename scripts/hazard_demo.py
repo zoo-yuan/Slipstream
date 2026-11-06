@@ -98,6 +98,10 @@ def parse_args():
                         "--mode mix reads the count from hazard config jaywalker.n_range)")
     p.add_argument("--hazard-config", default=None,
                    help="hazard config YAML for --mode mix (default: config/hazard_demo.yaml)")
+    p.add_argument("--placement", choices=["python", "kernel"], default="python",
+                   help="static-hazards placement engine: python = M1 prototype via set_agent_states "
+                        "(default, frozen behavior); kernel = K1 C-reset placement via hazard_* env knobs "
+                        "(artifacts land under artifacts/kernel-static by default)")
     p.add_argument("--skip-cut-in", action="store_true",
                    help="jaywalker only: do not attempt the scripted cut-in vehicle")
     p.add_argument("--seed", type=int, default=42)
@@ -195,15 +199,46 @@ def kernel_provenance() -> dict:
     }
 
 
-def build_env(args, map_bin: Path, cosim_partner_slots: int = 0):
+def build_env(args, map_bin: Path, cosim_partner_slots: int = 0, hazard_cfg=None):
     """Gigaflow env with all agents on IDM; knobs mirror pufferlib/config/puffer_drive.yaml.
 
     cosim_partner_slots > 0 appends CONTROLLER_STATIC vehicle slots after the
     gigaflow-spawned active agents (never spawned/moved by c_step, but included
     in collision/TTC/partner-obs loops). Slot init consumes no env RNG, so the
     dynamic spawn stream for a given seed is identical to the baseline run.
+    hazard_cfg (validated config/hazard_demo.yaml dict) maps onto the K1
+    hazard_* env kwargs: placement then happens INSIDE the C reset path.
     """
     from pufferlib.ocean.drive.drive import Drive
+
+    hazard_kwargs = {}
+    if hazard_cfg is not None:
+        pc, cc, kc = hazard_cfg["parked"], hazard_cfg["clusters"], hazard_cfg["cones"]
+        hazard_kwargs = {
+            "hazard_enable": bool(hazard_cfg["enable"]),
+            "hazard_parked_enable": bool(pc["enable"]),
+            "hazard_parked_n_lo": int(pc["n_range"][0]),
+            "hazard_parked_n_hi": int(pc["n_range"][1]),
+            # weights arrive aligned with the config sizes subset; the kernel knob
+            # face is the full car/bus/truck triple, so missing sizes get weight 0
+            "hazard_parked_car_weight": pc["size_weights"][pc["sizes"].index("car")] if "car" in pc["sizes"] else 0.0,
+            "hazard_parked_bus_weight": pc["size_weights"][pc["sizes"].index("bus")] if "bus" in pc["sizes"] else 0.0,
+            "hazard_parked_truck_weight": pc["size_weights"][pc["sizes"].index("truck")] if "truck" in pc["sizes"] else 0.0,
+            "hazard_clusters_enable": bool(cc["enable"]),
+            "hazard_clusters_n_lo": int(cc["n_range"][0]),
+            "hazard_clusters_n_hi": int(cc["n_range"][1]),
+            "hazard_clusters_layout": (
+                "both" if set(cc["layouts"]) == set(CLUSTER_LAYOUTS) else cc["layouts"][0]
+            ),
+            "hazard_cones_enable": bool(kc["enable"]),
+            "hazard_cones_zones_lo": int(kc["zones_range"][0]),
+            "hazard_cones_zones_hi": int(kc["zones_range"][1]),
+            "hazard_cones_taper_cones": int(kc["taper_cones"]),
+            "hazard_cones_block_rows": int(kc["block_rows"]),
+            "hazard_cones_block_cols": int(kc["block_cols"]),
+            "hazard_cones_spacing_m": float(kc["spacing_m"]),
+            "hazard_cones_taper_prob": float(kc["taper_prob"]),
+        }
 
     return Drive(
         map_dir=str(map_bin),  # pin a single map bin -> deterministic episode
@@ -249,6 +284,7 @@ def build_env(args, map_bin: Path, cosim_partner_slots: int = 0):
         obs_lane_speed_limit=True,
         cosim_partner_slots=cosim_partner_slots,
         seed=args.seed,
+        **hazard_kwargs,
     )
 
 
@@ -1247,6 +1283,108 @@ def verify_static_hazards(env, placed, idxs, agent_f32, agent_i32):
     }
 
 
+# --- K1 kernel placement (C-reset hazard engine, readback + audit helpers) ---
+
+def kernel_slot_capacity(cfg):
+    """Static-slot budget for the three kernel-placed classes (planned-count
+    highs; matches drive.py Drive.hazard_slot_capacity). Jaywalker/cut_in stay
+    python-stepped and are not part of the kernel placement budget."""
+    if not cfg["enable"]:
+        return 0
+    cap = 0
+    if cfg["parked"]["enable"]:
+        cap += cfg["parked"]["n_range"][1]
+    if cfg["clusters"]["enable"]:
+        cap += 2 * cfg["clusters"]["n_range"][1]
+    if cfg["cones"]["enable"]:
+        kc = cfg["cones"]
+        cap += kc["zones_range"][1] * max(kc["taper_cones"], kc["block_rows"] * kc["block_cols"])
+    return cap
+
+
+def hazards_from_kernel_readback(env, buffers, n_dyn):
+    """Reconstruct the kernel-placed hazards from the html frame readback.
+
+    The C reset path owns the static slots, so the demo never writes poses:
+    placed slots = sim_valid & not-removed rows at [n_dyn, n_dyn + slots).
+    Classification by geometry: length < 1 m -> cone; overlapping car pair
+    (margin 0) -> intentional collision cluster; otherwise parked. Cones are
+    chained into zone ids by 2.5 m proximity for callouts/zooms."""
+    af, ai = buffers["agent_f32"][0], buffers["agent_i32"][0]
+    entries = []
+    for k in range(env.cosim_partner_slots):
+        row = n_dyn + k
+        if row >= ai.shape[0] or ai[row, 2] != 1 or ai[row, 5] != 0:
+            continue
+        x, y, heading, length, width = (float(v) for v in af[row, [0, 1, 3, 4, 5]])
+        entries.append({"kind": None, "vtype": "cone", "x": x, "y": y, "z": float(af[row, 2]),
+                        "heading": heading, "length": length, "width": width,
+                        "lane_id": None, "s": None, "lateral": None, "idx": int(row)})
+
+    for e in entries:
+        if e["length"] < 1.0:
+            e["kind"] = "cone"
+    cars = [e for e in entries if e["kind"] is None]
+    used = set()
+    for i, a in enumerate(cars):
+        if i in used:
+            continue
+        pose_a = (a["x"], a["y"], a["heading"], a["length"], a["width"])
+        for j in range(i + 1, len(cars)):
+            if j in used:
+                continue
+            b = cars[j]
+            pose_b = (b["x"], b["y"], b["heading"], b["length"], b["width"])
+            if obb_overlap(pose_a, pose_b, margin=0.0):
+                key = f"cluster{len(used) // 2}"
+                a["kind"] = b["kind"] = "collided"
+                a["vtype"] = b["vtype"] = "crash"
+                a["cluster_id"] = b["cluster_id"] = key
+                used.update({i, j})
+                break
+    for e in entries:
+        if e["kind"] is None:
+            e["kind"] = "parked"
+            e["vtype"] = "car"
+
+    cones = [e for e in entries if e["kind"] == "cone"]
+    unassigned = set(range(len(cones)))
+    zone_id = 0
+    while unassigned:
+        seed_i = min(unassigned)
+        unassigned.discard(seed_i)
+        key = f"cones{zone_id}"
+        zone_id += 1
+        stack, comp = [seed_i], [seed_i]
+        while stack:
+            cur = stack.pop()
+            for o in list(unassigned):
+                if np.hypot(cones[cur]["x"] - cones[o]["x"], cones[cur]["y"] - cones[o]["y"]) <= 2.5:
+                    unassigned.discard(o)
+                    stack.append(o)
+                    comp.append(o)
+        for i in comp:
+            cones[i]["zone_id"] = key
+    return entries
+
+
+def kernel_edge_audit(placed, edges):
+    """Prototype-consistency off-road postcheck: no hazard box may cross a road
+    edge under the Python EdgeIndex rule (the kernel's own check_spawn_offroad
+    already rejected such poses at placement, so 0 is the only passing value)."""
+    return sum(1 for e in placed
+               if edges.blocked((e["x"], e["y"], e["heading"], e["length"], e["width"])))
+
+
+def load_python_seed_summary(seed, root="artifacts/static-hazards"):
+    """Legality evidence of the frozen M1 python placement for the same seed
+    (produced by --placement python runs recorded under artifacts/)."""
+    path = REPO_ROOT / root / f"seed{seed}" / "summary.json"
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 # --- legend, class coloring & pixel audit (ticket 07 owner acceptance R2) ----
 #
 # Owner feedback round 2: in-frame legends overlapped the map; the 18-color
@@ -1617,13 +1755,20 @@ def run_static_hazards(args, map_bin):
         d.mkdir(parents=True, exist_ok=True)
 
     t_start = time.time()
-    print(f"[hazard-demo] mode=static-hazards seed={args.seed} map={map_bin}")
+    kernel_mode = args.placement == "kernel"
+    mode_label = "kernel-static" if kernel_mode else "static-hazards"
+    print(f"[hazard-demo] mode={mode_label} (placement={args.placement}) seed={args.seed} map={map_bin}")
     cjk_font = detect_cjk_font()
     print(f"[hazard-demo] CJK font: {cjk_font or 'none -> English-only labels (no tofu)'}")
 
     # ---- episode 1: hazards --------------------------------------------------
-    slots = max(args.hazard_slots, 1)
-    env = build_env(args, map_bin, cosim_partner_slots=slots)
+    if kernel_mode:
+        hazard_cfg = load_hazard_config(args.hazard_config)
+        slots = kernel_slot_capacity(hazard_cfg)
+        env = build_env(args, map_bin, cosim_partner_slots=slots, hazard_cfg=hazard_cfg)
+    else:
+        slots = max(args.hazard_slots, 1)
+        env = build_env(args, map_bin, cosim_partner_slots=slots)
     env.reset(seed=args.seed)
     scenarios = env.get_state()
     buffers = capture_buffers(env, scenarios, extra_agent_slots=slots)
@@ -1640,28 +1785,56 @@ def run_static_hazards(args, map_bin):
         )
 
     capture()
-    lanes = LaneIndex(road_elements)
     edges = EdgeIndex(road_elements)
-    dyn = dynamic_boxes(buffers["agent_f32"][0], buffers["agent_i32"][0])
-    rng = hazard_rng(args.seed)
-    plan = plan_hazard_counts(rng)
-    rejects = {r: 0 for r in REJECT_REASONS}
-    placed = []
-    parked_n = place_parked(rng, lanes, edges, dyn, placed, rejects, plan["parked"])
-    clusters_n = place_clusters(rng, lanes, edges, dyn, placed, rejects, plan["clusters"])
-    zones_n, cones_n = place_cone_zones(rng, lanes, edges, dyn, placed, rejects, plan["cone_zones"])
-    print(f"[hazard-demo] plan={plan} placed: parked={parked_n} clusters={clusters_n} "
-          f"cone_zones={zones_n} ({cones_n} cones), slots={len(placed)}/{slots}")
+    if kernel_mode:
+        # K1: the C reset path already placed hazards; the demo only reads back,
+        # classifies and audits. No set_agent_states writes, no python placement.
+        placed = hazards_from_kernel_readback(env, buffers, args.agents_per_env)
+        plan = {
+            "parked": hazard_cfg["parked"]["n_range"][1] if hazard_cfg["parked"]["enable"] else 0,
+            "clusters": hazard_cfg["clusters"]["n_range"][1] if hazard_cfg["clusters"]["enable"] else 0,
+            "cone_zones": hazard_cfg["cones"]["zones_range"][1] if hazard_cfg["cones"]["enable"] else 0,
+        }
+        parked_n = sum(1 for e in placed if e["kind"] == "parked")
+        clusters_n = sum(1 for e in placed if e["kind"] == "collided") // 2
+        zones_n = len({e.get("zone_id") for e in placed if e["kind"] == "cone"})
+        cones_n = sum(1 for e in placed if e["kind"] == "cone")
+        deficit = (max(0, plan["parked"] - parked_n) + max(0, plan["clusters"] - clusters_n)
+                   + max(0, plan["cone_zones"] - zones_n))
+        rejects = {"planned_deficit": deficit}  # kernel rejection sampling, aggregated
+        idxs = np.array([e["idx"] for e in placed], np.int32)
+        legality = verify_static_hazards(env, placed, idxs,
+                                         buffers["agent_f32"][0], buffers["agent_i32"][0])
+        legality["offroad_violations_postcheck"] = int(kernel_edge_audit(placed, edges))
+        print(f"[hazard-demo] kernel placement (C reset): parked={parked_n} clusters={clusters_n} "
+              f"cone_zones={zones_n} ({cones_n} cones), slots={len(placed)}/{slots}")
+        print(f"[hazard-demo] legality: {legality}")
+    else:
+        lanes = LaneIndex(road_elements)
+        dyn = dynamic_boxes(buffers["agent_f32"][0], buffers["agent_i32"][0])
+        rng = hazard_rng(args.seed)
+        plan = plan_hazard_counts(rng)
+        rejects = {r: 0 for r in REJECT_REASONS}
+        placed = []
+        parked_n = place_parked(rng, lanes, edges, dyn, placed, rejects, plan["parked"])
+        clusters_n = place_clusters(rng, lanes, edges, dyn, placed, rejects, plan["clusters"])
+        zones_n, cones_n = place_cone_zones(rng, lanes, edges, dyn, placed, rejects, plan["cone_zones"])
+        print(f"[hazard-demo] plan={plan} placed: parked={parked_n} clusters={clusters_n} "
+              f"cone_zones={zones_n} ({cones_n} cones), slots={len(placed)}/{slots}")
+        if len(placed) > slots:
+            raise RuntimeError(f"hazard slots exhausted: {len(placed)} > {slots}; raise --hazard-slots")
+        if not placed:
+            raise RuntimeError("no hazard could be placed on this map/seed")
+
+        idxs = apply_static_hazards(env, args, placed)
+        capture()
+        legality = verify_static_hazards(env, placed, idxs,
+                                         buffers["agent_f32"][0], buffers["agent_i32"][0])
+        print(f"[hazard-demo] legality: {legality}")
     if len(placed) > slots:
-        raise RuntimeError(f"hazard slots exhausted: {len(placed)} > {slots}; raise --hazard-slots")
+        raise RuntimeError(f"hazard slots exhausted: {len(placed)} > {slots}")
     if not placed:
         raise RuntimeError("no hazard could be placed on this map/seed")
-
-    idxs = apply_static_hazards(env, args, placed)
-    capture()
-    legality = verify_static_hazards(env, placed, idxs,
-                                     buffers["agent_f32"][0], buffers["agent_i32"][0])
-    print(f"[hazard-demo] legality: {legality}")
 
     static_indices = [e["idx"] for e in placed]
     static_class_of = {e["idx"]: e["kind"] for e in placed}
@@ -1680,7 +1853,7 @@ def run_static_hazards(args, map_bin):
     def render_keyframes(step):
         pil = render_full_map(step, af0, ai0, road_elements, traffic_elements, sdc_row,
                               map_corners, args.dt, args.seed, map_bin.stem,
-                              "static-hazards", static_indices=static_indices,
+                              mode_label, static_indices=static_indices,
                               static_class_of=static_class_of)
         path = hazard_dir / f"env0_t{step:03d}.png"
         pil.save(path)
@@ -1725,7 +1898,7 @@ def run_static_hazards(args, map_bin):
     gif_imgs = [
         render_gif_frame(step, af, ai, road_elements, traffic_elements, sdc_row,
                          center, HAZARD_GIF_WINDOW_M, 900, args.dt, args.seed,
-                         map_bin.stem, mode_label="static-hazards",
+                         map_bin.stem, mode_label=mode_label,
                          static_indices=static_indices, static_class_of=static_class_of)
         for step, af, ai in gif_frames
     ]
@@ -1815,7 +1988,7 @@ def run_static_hazards(args, map_bin):
             h_img = render_gif_frame(t, zoom_snaps[t][0], zoom_snaps[t][1],
                                      road_elements, traffic_elements, sdc_row,
                                      ctr, ZOOM_WINDOW_M, ZOOM_PX, args.dt, args.seed,
-                                     map_bin.stem, mode_label="static-hazards",
+                                     map_bin.stem, mode_label=mode_label,
                                      static_indices=static_indices,
                                      static_class_of=static_class_of, min_cone_px=0)
             h_img = add_hazard_callouts(h_img, hazards_in_window(placed, ctr, ZOOM_WINDOW_M),
@@ -1852,6 +2025,8 @@ def run_static_hazards(args, map_bin):
         "cones": {"planned": plan["cone_zones"], "placed": zones_n, "cones_placed": cones_n},
         "reject_reasons": {k: v for k, v in rejects.items() if v},
         "slots_used": len(placed),
+        "engine": "kernel C reset (place_static_hazards)" if kernel_mode
+        else "python prototype (set_agent_states)",
     }
     sim = {
         "window_step": window,
@@ -1864,6 +2039,22 @@ def run_static_hazards(args, map_bin):
         "hazard": hazard_metrics,
     }
     notes = [
+        "K1 内核放置：静态 hazard 由 C reset 路径直接写入静态槽（drive.h place_static_hazards，"
+        "spawn 动态车之后、compute_observations 之前）；demo 只读回放分类，不写任何槽位。",
+        "旋钮 = env kwargs hazard_*（drive.py 校验 + binding fail-fast，init 前生效）；本 run 语义"
+        "映射自 config/hazard_demo.yaml；slots = 规划数上界预算（parked_hi + 2*cluster_hi + "
+        "zones_hi*max(taper_cones, block_rows*block_cols)）。",
+        "合法性复用内核 spawn 语义：check_obb_collision（margin 0.05m，簇内豁免——簇内交叠有意）"
+        "+ check_spawn_offroad + refresh_lane_association；RNG = episode rng_state（与动态撒车"
+        "同流，use_exact_episode_seed 语义下同 seed 全布局可复现）。",
+        "与 python 原型的已知口径差：内核 lane 锚定只认 types 1-2 drivable（原型 LaneIndex 收 1-4）；"
+        "冲突检查走内核 OBB/SAT 而非 python numpy SAT；rng 流不同 → 具体位置不逐位对应，只对照"
+        "合法性不变量（见 equivalence 段）。",
+        "hazard 关 = 零 rng 消耗、零放置，episode 与基线逐位一致（C 测试锁定）；锥桶 block 布局相邻"
+        "锥允许贴接（原型对簇内锥不做 intra-zone 检查，同口径）。",
+        "图例/配色/像素审计标准同 M1：单独 legend.png、类别着色、全图锥桶 ≥12px 菱形、"
+        "render_audit.cone_pixel_counts 任一为 0 即失败；compare/zoom hazard 侧带文字标注。",
+    ] if kernel_mode else [
         "静态 hazard 走 cosim_partner_slots 静态槽 + set_agent_states/set_agent_sizes 放置，零内核改动。",
         "binding 限制：vec_set_agent_states/sizes 只写 vec->envs[0]（cosim 单 env 假设）→ 本模式固定 --envs 1。",
         "同 seed 保证相同地图与初始撒车布局；hazard 引入后微观轨迹自然分叉（碰撞/绕行）。",
@@ -1880,8 +2071,34 @@ def run_static_hazards(args, map_bin):
         "partner obs 的 partner_scan 含全部静态槽（均无 lane 门控，drive.h），offroad 违规只在"
         "active agent 的 compute_metrics 里记（静态槽不走）——仅是在道证据缺失，如实记录不修正。",
     ]
+    equivalence = None
+    if kernel_mode:
+        py_summary = load_python_seed_summary(args.seed)
+        py_legality = (py_summary or {}).get("legality") or {}
+        equivalence = {
+            "rng_note": "内核放置消耗 episode rng_state（与动态撒车同流），python 原型用独立 "
+                        "RandomState —— 两者布局无逐位对应，仅对照合法性不变量。",
+            "python_source": ("artifacts/static-hazards/seed{}/summary.json".format(args.seed)
+                              if py_summary else None),
+            "invariants": {
+                "dynamic_overlap_violations": {"python": py_legality.get("dynamic_overlap_violations_postcheck"),
+                                                "kernel": legality["dynamic_overlap_violations_postcheck"]},
+                "kernel_lane_assoc_failures": {"python": py_legality.get("kernel_lane_assoc_failures"),
+                                                "kernel": legality["kernel_lane_assoc_failures"]},
+                "intentional_intra_cluster_overlaps": {
+                    "python": py_legality.get("intentional_intra_cluster_overlaps"),
+                    "kernel": legality["intentional_intra_cluster_overlaps"]},
+                "offroad_violations": {"python": "placement-time rejection (M1 contract)",
+                                        "kernel": legality["offroad_violations_postcheck"]},
+            },
+            "all_non_intentional_violations_zero": bool(
+                legality["dynamic_overlap_violations_postcheck"] == 0
+                and legality["offroad_violations_postcheck"] == 0
+                and legality["kernel_lane_assoc_failures"] == 0),
+        }
     seed_summary = {
-        "mode": "static-hazards",
+        "mode": mode_label,
+        "placement_engine": args.placement,
         "kernel": kernel_provenance(),
         "seed": args.seed,
         "map": {"name": map_bin.stem, "path": str(map_bin)},
@@ -1890,6 +2107,7 @@ def run_static_hazards(args, map_bin):
         "dt": args.dt,
         "placement": placement,
         "legality": legality,
+        "equivalence": equivalence,
         "simulation": sim,
         "render_audit": {
             "cone_color_rgb": list(CONE_RGB),
@@ -1913,22 +2131,37 @@ def run_static_hazards(args, map_bin):
         json.dumps(seed_summary, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
 
     # ---- aggregate artifacts over all seeds run so far -----------------------
+    if kernel_mode:
+        eq_root = {
+            "rng_note": equivalence["rng_note"],
+            "contract": "kernel 与 python 的非 intentional 违例均 = 0；具体位置可不同（RNG 流不同）",
+            "seeds": {},
+        }
+        for d in sorted(root.glob("seed*/summary.json")):
+            try:
+                s = json.loads(d.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if s.get("equivalence"):
+                eq_root["seeds"][str(s["seed"])] = s["equivalence"]
+        (root / "equivalence.json").write_text(
+            json.dumps(eq_root, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     seed_summaries = []
     for d in sorted(root.glob("seed*/summary.json")):
         try:
             seed_summaries.append(json.loads(d.read_text(encoding="utf-8")))
         except (json.JSONDecodeError, OSError):
             pass
-    write_root_artifacts(root, seed_summaries, cjk_path=cjk_font)
+    write_root_artifacts(root, seed_summaries, cjk_path=cjk_font, mode_label=mode_label)
     print(f"[hazard-demo] artifacts -> {root} ({seed_summary['runtime_s']}s); "
           f"collision rate change vs baseline @t={window}: {sim['collision_rate_change_pct']}%")
 
 
-def write_root_artifacts(root, seed_summaries, cjk_path=None):
+def write_root_artifacts(root, seed_summaries, cjk_path=None, mode_label="static-hazards"):
     """Aggregate legend.png / counts_histogram.png / summary.json / index.html over seed dirs."""
     render_legend_png(root / "legend.png", "static-hazards", cjk_path=cjk_path)
     agg = {
-        "mode": "static-hazards",
+        "mode": mode_label,
         "kernel": kernel_provenance(),
         "seeds": [s["seed"] for s in seed_summaries],
         "per_seed": [
@@ -3935,13 +4168,19 @@ def write_mix_root(root, seed_summaries, cjk_path=None):
 def main():
     args = parse_args()
     verify_in_repo_kernel()
+    if args.placement == "kernel" and args.mode != "static-hazards":
+        raise SystemExit("--placement kernel only applies to --mode static-hazards")
     if args.out is None:
-        args.out = {"baseline": "artifacts/baseline",
-                    "static-hazards": "artifacts/static-hazards",
-                    "jaywalker": "artifacts/jaywalker",
-                    "mix": "artifacts/mix"}[args.mode]
-    if args.hazard_config is not None and args.mode != "mix":
-        raise SystemExit("--hazard-config only applies to --mode mix")
+        out_default = {"baseline": "artifacts/baseline",
+                       "static-hazards": "artifacts/static-hazards",
+                       "jaywalker": "artifacts/jaywalker",
+                       "mix": "artifacts/mix"}[args.mode]
+        if args.mode == "static-hazards" and args.placement == "kernel":
+            out_default = "artifacts/kernel-static"
+        args.out = out_default
+    if args.hazard_config is not None and args.mode != "mix" \
+            and not (args.mode == "static-hazards" and args.placement == "kernel"):
+        raise SystemExit("--hazard-config only applies to --mode mix (or kernel placement)")
     if args.mode == "mix":
         out_dir = REPO_ROOT / args.out if not Path(args.out).is_absolute() else Path(args.out)
         out_dir.mkdir(parents=True, exist_ok=True)

@@ -2114,6 +2114,101 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->num_max_agents = (int) unpack(kwargs, "max_agents_per_env");
     env->cosim_partner_slots = (int) unpack(kwargs, "cosim_partner_slots");
     env->cosim_eval_semantics = (int) unpack(kwargs, "cosim_eval_semantics");
+    // K1 in-kernel static hazard placement knobs (mirror config/hazard_demo.yaml semantics).
+    env->hazard_enable = (int) unpack(kwargs, "hazard_enable");
+    env->hazard_parked_enable = (int) unpack(kwargs, "hazard_parked_enable");
+    env->hazard_parked_n_lo = (int) unpack(kwargs, "hazard_parked_n_lo");
+    env->hazard_parked_n_hi = (int) unpack(kwargs, "hazard_parked_n_hi");
+    env->hazard_parked_size_weights[HAZARD_PRESET_CAR] = (float) unpack(kwargs, "hazard_parked_car_weight");
+    env->hazard_parked_size_weights[HAZARD_PRESET_BUS] = (float) unpack(kwargs, "hazard_parked_bus_weight");
+    env->hazard_parked_size_weights[HAZARD_PRESET_TRUCK] = (float) unpack(kwargs, "hazard_parked_truck_weight");
+    env->hazard_clusters_enable = (int) unpack(kwargs, "hazard_clusters_enable");
+    env->hazard_clusters_n_lo = (int) unpack(kwargs, "hazard_clusters_n_lo");
+    env->hazard_clusters_n_hi = (int) unpack(kwargs, "hazard_clusters_n_hi");
+    env->hazard_cones_enable = (int) unpack(kwargs, "hazard_cones_enable");
+    env->hazard_cones_zones_lo = (int) unpack(kwargs, "hazard_cones_zones_lo");
+    env->hazard_cones_zones_hi = (int) unpack(kwargs, "hazard_cones_zones_hi");
+    env->hazard_cones_taper_cones = (int) unpack(kwargs, "hazard_cones_taper_cones");
+    env->hazard_cones_block_rows = (int) unpack(kwargs, "hazard_cones_block_rows");
+    env->hazard_cones_block_cols = (int) unpack(kwargs, "hazard_cones_block_cols");
+    env->hazard_cones_spacing_m = (float) unpack(kwargs, "hazard_cones_spacing_m");
+    env->hazard_cones_taper_prob = (float) unpack(kwargs, "hazard_cones_taper_prob");
+    if (env->hazard_enable) {
+        // Trust boundary: fail-fast on any malformed external config BEFORE the env runs.
+        if (env->simulation_mode != SIMULATION_MODE_GIGAFLOW) {
+            PyErr_SetString(PyExc_ValueError, "hazard_enable requires simulation_mode='gigaflow'");
+            return -1;
+        }
+        if (env->cosim_partner_slots <= 0) {
+            PyErr_SetString(PyExc_ValueError, "hazard_enable requires cosim_partner_slots > 0 (hazard slot budget)");
+            return -1;
+        }
+        if (env->hazard_parked_enable
+            && (!(env->hazard_parked_n_lo >= 0 && env->hazard_parked_n_lo <= env->hazard_parked_n_hi))) {
+            PyErr_SetString(PyExc_ValueError, "hazard_parked_n_lo/n_hi must satisfy 0 <= lo <= hi");
+            return -1;
+        }
+        float weight_sum = 0.0f;
+        for (int i = 0; i < HAZARD_PRESET_COUNT; i++) {
+            if (!isfinite(env->hazard_parked_size_weights[i]) || env->hazard_parked_size_weights[i] < 0.0f) {
+                PyErr_SetString(PyExc_ValueError, "hazard_parked_*_weight must be finite and >= 0");
+                return -1;
+            }
+            weight_sum += env->hazard_parked_size_weights[i];
+        }
+        if (!(weight_sum > 1e-6f)) {
+            PyErr_SetString(PyExc_ValueError, "hazard_parked_*_weight must sum to a positive value");
+            return -1;
+        }
+        for (int i = 0; i < HAZARD_PRESET_COUNT; i++) {
+            env->hazard_parked_size_weights[i] /= weight_sum; // normalize to a probability vector
+        }
+        if (env->hazard_clusters_enable
+            && (!(env->hazard_clusters_n_lo >= 0 && env->hazard_clusters_n_lo <= env->hazard_clusters_n_hi))) {
+            PyErr_SetString(PyExc_ValueError, "hazard_clusters_n_lo/n_hi must satisfy 0 <= lo <= hi");
+            return -1;
+        }
+        char *hazard_layout = unpack_str(kwargs, "hazard_clusters_layout");
+        if (strcmp(hazard_layout, "both") == 0) {
+            env->hazard_clusters_layout = HAZARD_CLUSTER_LAYOUT_BOTH;
+        } else if (strcmp(hazard_layout, "rear_end") == 0) {
+            env->hazard_clusters_layout = HAZARD_CLUSTER_LAYOUT_REAR_END;
+        } else if (strcmp(hazard_layout, "t_bone") == 0) {
+            env->hazard_clusters_layout = HAZARD_CLUSTER_LAYOUT_T_BONE;
+        } else {
+            PyErr_SetString(PyExc_ValueError, "hazard_clusters_layout must be one of: both, rear_end, t_bone");
+            return -1;
+        }
+        if (env->hazard_cones_enable
+            && (!(env->hazard_cones_zones_lo >= 0 && env->hazard_cones_zones_lo <= env->hazard_cones_zones_hi))) {
+            PyErr_SetString(PyExc_ValueError, "hazard_cones_zones_lo/hi must satisfy 0 <= lo <= hi");
+            return -1;
+        }
+        if (env->hazard_cones_enable && env->hazard_cones_taper_cones < 2) {
+            PyErr_SetString(PyExc_ValueError, "hazard_cones_taper_cones must be >= 2");
+            return -1;
+        }
+        if (env->hazard_cones_enable && env->hazard_cones_block_rows < 1) {
+            PyErr_SetString(PyExc_ValueError, "hazard_cones_block_rows must be >= 1");
+            return -1;
+        }
+        if (env->hazard_cones_enable && env->hazard_cones_block_cols < 2) {
+            PyErr_SetString(PyExc_ValueError, "hazard_cones_block_cols must be >= 2");
+            return -1;
+        }
+        if (env->hazard_cones_enable
+            && (!(env->hazard_cones_spacing_m > 0.0f) || !isfinite(env->hazard_cones_spacing_m))) {
+            PyErr_SetString(PyExc_ValueError, "hazard_cones_spacing_m must be finite and > 0");
+            return -1;
+        }
+        if (env->hazard_cones_enable
+            && (!(env->hazard_cones_taper_prob >= 0.0f && env->hazard_cones_taper_prob <= 1.0f))) {
+            PyErr_SetString(PyExc_ValueError, "hazard_cones_taper_prob must be in [0, 1]");
+            return -1;
+        }
+    } else {
+        env->hazard_clusters_layout = HAZARD_CLUSTER_LAYOUT_BOTH;
+    }
     int init_step = (int) unpack(kwargs, "init_step");
     env->init_step = init_step;
     env->timestep = init_step;

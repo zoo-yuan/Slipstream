@@ -156,6 +156,27 @@ class Drive(pufferlib.PufferEnv):
         phantom_braking_trigger_prob=0.0,
         phantom_braking_duration_seconds=1.0,
         phantom_braking_freeze_steering=True,
+        # K1 in-kernel static hazard placement (defaults = the frozen M1 prototype numbers;
+        # hazard_enable=False consumes no RNG draws, so episodes stay bit-identical to a hazard-free env)
+        hazard_enable=False,
+        hazard_parked_enable=True,
+        hazard_parked_n_lo=6,
+        hazard_parked_n_hi=10,
+        hazard_parked_car_weight=0.6,
+        hazard_parked_bus_weight=0.2,
+        hazard_parked_truck_weight=0.2,
+        hazard_clusters_enable=True,
+        hazard_clusters_n_lo=1,
+        hazard_clusters_n_hi=2,
+        hazard_clusters_layout="both",
+        hazard_cones_enable=True,
+        hazard_cones_zones_lo=1,
+        hazard_cones_zones_hi=2,
+        hazard_cones_taper_cones=8,
+        hazard_cones_block_rows=2,
+        hazard_cones_block_cols=7,
+        hazard_cones_spacing_m=1.5,
+        hazard_cones_taper_prob=0.5,
     ):
         self.dt = dt
         self.base_max_speed_mps = float(base_max_speed_mps)
@@ -296,6 +317,68 @@ class Drive(pufferlib.PufferEnv):
             raise ValueError(f"cosim_partner_slots must be >= 0. Got: {cosim_partner_slots}")
         if self.cosim_partner_slots > 0 and simulation_mode != "gigaflow":
             raise ValueError("cosim_partner_slots is only supported in gigaflow simulation_mode")
+        # K1 in-kernel static hazard knobs: fail-fast validation BEFORE env init (kernel trust boundary).
+        self.hazard_enable = bool(hazard_enable)
+        self.hazard_parked_enable = bool(hazard_parked_enable)
+        self.hazard_parked_n_lo = int(hazard_parked_n_lo)
+        self.hazard_parked_n_hi = int(hazard_parked_n_hi)
+        self.hazard_parked_car_weight = float(hazard_parked_car_weight)
+        self.hazard_parked_bus_weight = float(hazard_parked_bus_weight)
+        self.hazard_parked_truck_weight = float(hazard_parked_truck_weight)
+        self.hazard_clusters_enable = bool(hazard_clusters_enable)
+        self.hazard_clusters_n_lo = int(hazard_clusters_n_lo)
+        self.hazard_clusters_n_hi = int(hazard_clusters_n_hi)
+        self.hazard_clusters_layout = hazard_clusters_layout
+        self.hazard_cones_enable = bool(hazard_cones_enable)
+        self.hazard_cones_zones_lo = int(hazard_cones_zones_lo)
+        self.hazard_cones_zones_hi = int(hazard_cones_zones_hi)
+        self.hazard_cones_taper_cones = int(hazard_cones_taper_cones)
+        self.hazard_cones_block_rows = int(hazard_cones_block_rows)
+        self.hazard_cones_block_cols = int(hazard_cones_block_cols)
+        self.hazard_cones_spacing_m = float(hazard_cones_spacing_m)
+        self.hazard_cones_taper_prob = float(hazard_cones_taper_prob)
+        if self.hazard_enable:
+            if simulation_mode != "gigaflow":
+                raise ValueError("hazard_enable requires simulation_mode='gigaflow'")
+            hazard_weights = (self.hazard_parked_car_weight, self.hazard_parked_bus_weight, self.hazard_parked_truck_weight)
+            if any(not np.isfinite(w) or w < 0.0 for w in hazard_weights):
+                raise ValueError(f"hazard_parked_*_weight must be finite and >= 0, got {hazard_weights}")
+            if not sum(hazard_weights) > 1e-6:
+                raise ValueError(f"hazard_parked_*_weight must sum to a positive value, got {hazard_weights}")
+            hazard_int_ranges = {
+                "hazard_parked_n_lo/hi": (self.hazard_parked_n_lo, self.hazard_parked_n_hi, self.hazard_parked_enable),
+                "hazard_clusters_n_lo/hi": (self.hazard_clusters_n_lo, self.hazard_clusters_n_hi, self.hazard_clusters_enable),
+                "hazard_cones_zones_lo/hi": (self.hazard_cones_zones_lo, self.hazard_cones_zones_hi, self.hazard_cones_enable),
+            }
+            for name, (lo, hi, enabled) in hazard_int_ranges.items():
+                if enabled and not (0 <= lo <= hi):
+                    raise ValueError(f"{name} must satisfy 0 <= lo <= hi, got {lo}/{hi}")
+            if self.hazard_clusters_layout not in ("both", "rear_end", "t_bone"):
+                raise ValueError(
+                    f"hazard_clusters_layout must be one of 'both', 'rear_end', 't_bone'. Got: {hazard_clusters_layout}"
+                )
+            if self.hazard_cones_enable:
+                if self.hazard_cones_taper_cones < 2:
+                    raise ValueError(f"hazard_cones_taper_cones must be >= 2. Got: {self.hazard_cones_taper_cones}")
+                if self.hazard_cones_block_rows < 1:
+                    raise ValueError(f"hazard_cones_block_rows must be >= 1. Got: {self.hazard_cones_block_rows}")
+                if self.hazard_cones_block_cols < 2:
+                    raise ValueError(f"hazard_cones_block_cols must be >= 2. Got: {self.hazard_cones_block_cols}")
+                if not np.isfinite(self.hazard_cones_spacing_m) or self.hazard_cones_spacing_m <= 0.0:
+                    raise ValueError(
+                        f"hazard_cones_spacing_m must be finite and > 0. Got: {self.hazard_cones_spacing_m}"
+                    )
+                if not 0.0 <= self.hazard_cones_taper_prob <= 1.0:
+                    raise ValueError(
+                        f"hazard_cones_taper_prob must be in [0, 1]. Got: {self.hazard_cones_taper_prob}"
+                    )
+            # static-slot budget: the placement can never exceed the planned-count highs
+            hazard_slots_required = self.hazard_slot_capacity()
+            if self.cosim_partner_slots < hazard_slots_required:
+                raise ValueError(
+                    f"hazard_enable needs cosim_partner_slots >= {hazard_slots_required} "
+                    f"(planned-count highs), got {self.cosim_partner_slots}"
+                )
         # Co-sim envs stay out of eval_mode (its scenario batching needs a full agent pool) but still want the
         # eval-only observation/action semantics: perceived-size margin and standstill jerk deadband.
         self.cosim_eval_semantics = int(bool(cosim_eval_semantics))
@@ -622,6 +705,25 @@ class Drive(pufferlib.PufferEnv):
             "max_agents_per_env": self.max_agents_per_env,
             "cosim_partner_slots": self.cosim_partner_slots,
             "cosim_eval_semantics": self.cosim_eval_semantics,
+            "hazard_enable": int(self.hazard_enable),
+            "hazard_parked_enable": int(self.hazard_parked_enable),
+            "hazard_parked_n_lo": self.hazard_parked_n_lo,
+            "hazard_parked_n_hi": self.hazard_parked_n_hi,
+            "hazard_parked_car_weight": self.hazard_parked_car_weight,
+            "hazard_parked_bus_weight": self.hazard_parked_bus_weight,
+            "hazard_parked_truck_weight": self.hazard_parked_truck_weight,
+            "hazard_clusters_enable": int(self.hazard_clusters_enable),
+            "hazard_clusters_n_lo": self.hazard_clusters_n_lo,
+            "hazard_clusters_n_hi": self.hazard_clusters_n_hi,
+            "hazard_clusters_layout": self.hazard_clusters_layout,
+            "hazard_cones_enable": int(self.hazard_cones_enable),
+            "hazard_cones_zones_lo": self.hazard_cones_zones_lo,
+            "hazard_cones_zones_hi": self.hazard_cones_zones_hi,
+            "hazard_cones_taper_cones": self.hazard_cones_taper_cones,
+            "hazard_cones_block_rows": self.hazard_cones_block_rows,
+            "hazard_cones_block_cols": self.hazard_cones_block_cols,
+            "hazard_cones_spacing_m": self.hazard_cones_spacing_m,
+            "hazard_cones_taper_prob": self.hazard_cones_taper_prob,
             "init_step": self._sample_init_step(),
             "init_step_min_horizon": self.init_step_min_horizon,
             "stagger_first_episode": self.stagger_first_episode,
@@ -668,6 +770,21 @@ class Drive(pufferlib.PufferEnv):
             "phantom_braking_duration_seconds": self.phantom_braking_duration_seconds,
             "phantom_braking_freeze_steering": self.phantom_braking_freeze_steering,
         }
+
+    def hazard_slot_capacity(self):
+        """Upper bound of static slots the hazard config can ever consume (planned-count
+        highs; placement may use fewer, never more). All-disabled hazards need 0."""
+        if not self.hazard_enable:
+            return 0
+        cap = 0
+        if self.hazard_parked_enable:
+            cap += self.hazard_parked_n_hi
+        if self.hazard_clusters_enable:
+            cap += 2 * self.hazard_clusters_n_hi
+        if self.hazard_cones_enable:
+            cap += self.hazard_cones_zones_hi * max(self.hazard_cones_taper_cones,
+                                                    self.hazard_cones_block_rows * self.hazard_cones_block_cols)
+        return cap
 
     def _sample_init_step(self):
         # randomizer for the initialization of the C environment

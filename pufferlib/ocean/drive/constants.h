@@ -183,6 +183,35 @@ static const float STEERING_VALUES[NUM_STEERING_ACTIONS]
 #define REPLAY_SPAWN_LONGITUDINAL_CLEARANCE_M SPAWN_CLEARANCE_M // Gap needed to other cars in front of and behind
 #define REPLAY_MAX_CONTROLLED_LENGTH_M 6.0f                     // Longer vehicles (trucks, buses) are made static
 #define REPLAY_SPAWN_MAX_LANE_DISTANCE_M 2.5f                   // Car must be this close to a lane center line
+// K1 in-kernel static hazard placement (parked / collision clusters / cones).
+// Geometry + attempt budget mirror the accepted Python prototype numbers
+// (scripts/hazard_demo.py M1 frozen tables, config/hazard_demo.yaml semantics).
+#define HAZARD_PRESET_COUNT 3 // car, bus, truck (order = hazard_parked_size_weights[])
+static const float HAZARD_PRESET_LENGTH_M[HAZARD_PRESET_COUNT] = {4.5f, 12.0f, 8.0f};
+static const float HAZARD_PRESET_WIDTH_M[HAZARD_PRESET_COUNT] = {1.9f, 2.5f, 2.4f};
+#define HAZARD_LANE_MIN_LEN_M 12.0f          // candidate lanes must be at least this long
+#define HAZARD_LANE_MIN_POINTS 3             // a lane polyline needs this many points to anchor a pose
+#define HAZARD_LANE_STRAIGHT_MAX_RAD 0.35f   // max per-segment heading delta for "straight" lane clusters/cones
+#define HAZARD_CONFLICT_MARGIN_M 0.05f       // candidate box inflation before the OBB overlap check
+// Road-edge clearance for hazard candidate rejection. Must stay >= the demo's
+// conservative EdgeIndex postcheck band (corner clearance 0.15 m in
+// scripts/hazard_demo.py): the kernel must reject a superset of what the
+// postcheck flags, so offroad_violations_postcheck == 0 is guaranteed by
+// construction (K1 legality contract).
+#define HAZARD_EDGE_CLEARANCE_M 0.15f
+#define HAZARD_MAX_PLACE_ATTEMPTS 40         // rejection-sampling attempts per hazard (prototype budget)
+#define HAZARD_PARKED_LATERAL_MIN_M 0.9f     // kerbside half-on-road lateral offset band
+#define HAZARD_PARKED_LATERAL_MAX_M 1.35f
+#define HAZARD_PARKED_SPACING_GAP_M 1.0f     // extra bumper-to-bumper gap between parked cars on one lane
+#define HAZARD_ASSUMED_LANE_WIDTH_M 3.5f     // carla default; map bins expose no lane width (prototype assumption)
+#define HAZARD_CONE_SIZE_M 0.5f
+#define HAZARD_CONE_BLOCK_LAT_MAX_M 1.45f    // outermost cone center: kernel lane-assoc radius is 3x width
+#define HAZARD_CLUSTER_LAYOUT_BOTH 0
+#define HAZARD_CLUSTER_LAYOUT_REAR_END 1
+#define HAZARD_CLUSTER_LAYOUT_T_BONE 2
+#define HAZARD_PRESET_CAR 0
+#define HAZARD_PRESET_BUS 1
+#define HAZARD_PRESET_TRUCK 2
 
 // Stop line geometry (spawn overlap check and IDM braking)
 #define STOP_LINE_DIST_SQ (10.0f * 10.0f)

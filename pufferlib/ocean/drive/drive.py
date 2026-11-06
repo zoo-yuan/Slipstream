@@ -177,6 +177,13 @@ class Drive(pufferlib.PufferEnv):
         hazard_cones_block_cols=7,
         hazard_cones_spacing_m=1.5,
         hazard_cones_taper_prob=0.5,
+        # K2 in-kernel scripted crossing walkers (defaults off; walker-free episodes stay
+        # bit-identical to the hazard-free stream because the walker block consumes no RNG)
+        hazard_walkers_enable=False,
+        hazard_walkers_n_lo=1,
+        hazard_walkers_n_hi=2,
+        hazard_walkers_speed_lo_mps=1.2,
+        hazard_walkers_speed_hi_mps=1.6,
     ):
         self.dt = dt
         self.base_max_speed_mps = float(base_max_speed_mps)
@@ -337,6 +344,11 @@ class Drive(pufferlib.PufferEnv):
         self.hazard_cones_block_cols = int(hazard_cones_block_cols)
         self.hazard_cones_spacing_m = float(hazard_cones_spacing_m)
         self.hazard_cones_taper_prob = float(hazard_cones_taper_prob)
+        self.hazard_walkers_enable = bool(hazard_walkers_enable)
+        self.hazard_walkers_n_lo = int(hazard_walkers_n_lo)
+        self.hazard_walkers_n_hi = int(hazard_walkers_n_hi)
+        self.hazard_walkers_speed_lo_mps = float(hazard_walkers_speed_lo_mps)
+        self.hazard_walkers_speed_hi_mps = float(hazard_walkers_speed_hi_mps)
         if self.hazard_enable:
             if simulation_mode != "gigaflow":
                 raise ValueError("hazard_enable requires simulation_mode='gigaflow'")
@@ -371,6 +383,22 @@ class Drive(pufferlib.PufferEnv):
                 if not 0.0 <= self.hazard_cones_taper_prob <= 1.0:
                     raise ValueError(
                         f"hazard_cones_taper_prob must be in [0, 1]. Got: {self.hazard_cones_taper_prob}"
+                    )
+            if self.hazard_walkers_enable:
+                if not (1 <= self.hazard_walkers_n_lo <= self.hazard_walkers_n_hi):
+                    raise ValueError(
+                        "hazard_walkers_n_lo/hi must satisfy 1 <= lo <= hi, "
+                        f"got {self.hazard_walkers_n_lo}/{self.hazard_walkers_n_hi}"
+                    )
+                if self.hazard_walkers_n_hi > 8:
+                    raise ValueError(
+                        f"hazard_walkers_n_hi must be <= 8 (walker slot cap). Got: {self.hazard_walkers_n_hi}"
+                    )
+                if (not np.isfinite(self.hazard_walkers_speed_lo_mps) or self.hazard_walkers_speed_lo_mps <= 0.0
+                        or self.hazard_walkers_speed_lo_mps > self.hazard_walkers_speed_hi_mps):
+                    raise ValueError(
+                        "hazard_walkers_speed_lo/hi must satisfy 0 < lo <= hi (finite), "
+                        f"got {self.hazard_walkers_speed_lo_mps}/{self.hazard_walkers_speed_hi_mps}"
                     )
             # static-slot budget: the placement can never exceed the planned-count highs
             hazard_slots_required = self.hazard_slot_capacity()
@@ -724,6 +752,11 @@ class Drive(pufferlib.PufferEnv):
             "hazard_cones_block_cols": self.hazard_cones_block_cols,
             "hazard_cones_spacing_m": self.hazard_cones_spacing_m,
             "hazard_cones_taper_prob": self.hazard_cones_taper_prob,
+            "hazard_walkers_enable": int(self.hazard_walkers_enable),
+            "hazard_walkers_n_lo": self.hazard_walkers_n_lo,
+            "hazard_walkers_n_hi": self.hazard_walkers_n_hi,
+            "hazard_walkers_speed_lo_mps": self.hazard_walkers_speed_lo_mps,
+            "hazard_walkers_speed_hi_mps": self.hazard_walkers_speed_hi_mps,
             "init_step": self._sample_init_step(),
             "init_step_min_horizon": self.init_step_min_horizon,
             "stagger_first_episode": self.stagger_first_episode,
@@ -773,7 +806,8 @@ class Drive(pufferlib.PufferEnv):
 
     def hazard_slot_capacity(self):
         """Upper bound of static slots the hazard config can ever consume (planned-count
-        highs; placement may use fewer, never more). All-disabled hazards need 0."""
+        highs; placement may use fewer, never more). All-disabled hazards need 0.
+        K2 walkers own the tail slots (hazard_walkers_n_hi) on top of the K1 head classes."""
         if not self.hazard_enable:
             return 0
         cap = 0
@@ -784,7 +818,39 @@ class Drive(pufferlib.PufferEnv):
         if self.hazard_cones_enable:
             cap += self.hazard_cones_zones_hi * max(self.hazard_cones_taper_cones,
                                                     self.hazard_cones_block_rows * self.hazard_cones_block_cols)
+        if self.hazard_walkers_enable:
+            cap += self.hazard_walkers_n_hi
         return cap
+
+    def get_walker_metrics(self):
+        """K2 kernel-side per-walker crossing metrics (one row per placed walker,
+        per env). duration_s/min_dist_m are -1.0 while unset (not finished / no
+        dynamic agent observed) — the demo maps those to None."""
+        max_walkers = self.hazard_walkers_n_hi * self.num_envs
+        out = {
+            "idx": np.zeros(max_walkers, dtype=np.int32),
+            "completed": np.zeros(max_walkers, dtype=np.int32),
+            "start_step": np.zeros(max_walkers, dtype=np.int32),
+            "done_step": np.full(max_walkers, -1, dtype=np.int32),
+            "duration_s": np.full(max_walkers, -1.0, dtype=np.float32),
+            "min_dist_m": np.full(max_walkers, -1.0, dtype=np.float32),
+            "contact_events": np.zeros(max_walkers, dtype=np.int32),
+            "crossing_width_m": np.zeros(max_walkers, dtype=np.float32),
+            "speed_mps": np.zeros(max_walkers, dtype=np.float32),
+        }
+        binding.vec_get_walker_metrics(
+            self.c_envs,
+            out["idx"],
+            out["completed"],
+            out["start_step"],
+            out["done_step"],
+            out["duration_s"],
+            out["min_dist_m"],
+            out["contact_events"],
+            out["crossing_width_m"],
+            out["speed_mps"],
+        )
+        return out
 
     def _sample_init_step(self):
         # randomizer for the initialization of the C environment

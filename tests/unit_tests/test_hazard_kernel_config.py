@@ -92,6 +92,49 @@ class TestHazardKernelConfig(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "hazard_cones_taper_prob"):
             Drive(config_only=True, hazard_cones_taper_prob=1.5, **base)
 
+    def test_walker_knob_validation(self):
+        base = dict(hazard_enable=True, hazard_walkers_enable=True, cosim_partner_slots=52)
+        with self.assertRaisesRegex(ValueError, "hazard_walkers_n_lo/hi"):
+            Drive(config_only=True, hazard_walkers_n_lo=0, hazard_walkers_n_hi=2, **base)
+        with self.assertRaisesRegex(ValueError, "hazard_walkers_n_lo/hi"):
+            Drive(config_only=True, hazard_walkers_n_lo=3, hazard_walkers_n_hi=2, **base)
+        with self.assertRaisesRegex(ValueError, "walker slot cap"):
+            Drive(config_only=True, hazard_walkers_n_hi=9, **base)
+        with self.assertRaisesRegex(ValueError, "hazard_walkers_speed_lo/hi"):
+            Drive(config_only=True, hazard_walkers_speed_lo_mps=0.0, **base)
+        with self.assertRaisesRegex(ValueError, "hazard_walkers_speed_lo/hi"):
+            Drive(config_only=True, hazard_walkers_speed_lo_mps=1.8, hazard_walkers_speed_hi_mps=1.6, **base)
+
+    def test_walker_slot_budget_contract(self):
+        # walkers own the tail slots on top of the K1 head classes: 10 parked +
+        # 2*2 cluster cars + 2 zones*14 cones + 2 walkers = 44
+        env = Drive(
+            config_only=True,
+            hazard_enable=True,
+            cosim_partner_slots=44,
+            hazard_walkers_enable=True,
+            hazard_walkers_n_lo=1,
+            hazard_walkers_n_hi=2,
+        )
+        self.assertEqual(env.hazard_slot_capacity(), 44)
+        with self.assertRaisesRegex(ValueError, r"cosim_partner_slots >= 44"):
+            Drive(
+                config_only=True,
+                hazard_enable=True,
+                cosim_partner_slots=43,
+                hazard_walkers_enable=True,
+                hazard_walkers_n_hi=2,
+            )
+
+    def test_walker_defaults_off_and_kwargs_reach_binding(self):
+        env = Drive(config_only=True)
+        kwargs = env._env_init_kwargs(map_file="x.bin", max_agents=32)
+        self.assertEqual(kwargs["hazard_walkers_enable"], 0)
+        self.assertEqual(kwargs["hazard_walkers_n_lo"], 1)
+        self.assertEqual(kwargs["hazard_walkers_n_hi"], 2)
+        self.assertEqual(kwargs["hazard_walkers_speed_lo_mps"], 1.2)
+        self.assertEqual(kwargs["hazard_walkers_speed_hi_mps"], 1.6)
+
     def test_binding_rejects_bad_config_at_env_init(self):
         # Defense-in-depth: even if Python-side validation were bypassed, the C
         # binding must fail-fast on malformed hazard config before the env runs.
@@ -110,6 +153,10 @@ class TestHazardKernelConfig(unittest.TestCase):
             Drive(**base, hazard_parked_car_weight=-0.5)
         with self.assertRaises(Exception):
             Drive(**base, hazard_clusters_layout="side_swipe")
+        with self.assertRaises(Exception):
+            Drive(**base, hazard_walkers_enable=True, hazard_walkers_n_lo=2, hazard_walkers_n_hi=1)
+        with self.assertRaises(Exception):
+            Drive(**base, hazard_walkers_enable=True, hazard_walkers_n_hi=99)
 
 
 if __name__ == "__main__":

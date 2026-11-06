@@ -984,6 +984,62 @@ static PyObject *vec_get_global_agent_state(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+// K2: per-env walker crossing metrics (demo render pipeline). Returns the total
+// walker count across envs so the caller can size arrays on the first call.
+static PyObject *vec_get_walker_metrics(PyObject *self, PyObject *args) {
+    if (PyTuple_Size(args) != 10) {
+        PyErr_SetString(PyExc_TypeError, "vec_get_walker_metrics requires 10 arguments");
+        return NULL;
+    }
+    VecEnv *vec = unpack_vecenv(args);
+    if (!vec) {
+        return NULL;
+    }
+    PyObject *idx_arr = PyTuple_GetItem(args, 1);
+    PyObject *completed_arr = PyTuple_GetItem(args, 2);
+    PyObject *start_step_arr = PyTuple_GetItem(args, 3);
+    PyObject *done_step_arr = PyTuple_GetItem(args, 4);
+    PyObject *duration_arr = PyTuple_GetItem(args, 5);
+    PyObject *min_dist_arr = PyTuple_GetItem(args, 6);
+    PyObject *contact_arr = PyTuple_GetItem(args, 7);
+    PyObject *width_arr = PyTuple_GetItem(args, 8);
+    PyObject *speed_arr = PyTuple_GetItem(args, 9);
+    if (!PyArray_Check(idx_arr) || !PyArray_Check(completed_arr) || !PyArray_Check(start_step_arr)
+        || !PyArray_Check(done_step_arr) || !PyArray_Check(duration_arr) || !PyArray_Check(min_dist_arr)
+        || !PyArray_Check(contact_arr) || !PyArray_Check(width_arr) || !PyArray_Check(speed_arr)) {
+        PyErr_SetString(PyExc_TypeError, "All output arrays must be NumPy arrays");
+        return NULL;
+    }
+    int cap = (int) PyArray_SIZE((PyArrayObject *) idx_arr);
+    int *idx = (int *) PyArray_DATA((PyArrayObject *) idx_arr);
+    int *completed = (int *) PyArray_DATA((PyArrayObject *) completed_arr);
+    int *start_step = (int *) PyArray_DATA((PyArrayObject *) start_step_arr);
+    int *done_step = (int *) PyArray_DATA((PyArrayObject *) done_step_arr);
+    float *duration = (float *) PyArray_DATA((PyArrayObject *) duration_arr);
+    float *min_dist = (float *) PyArray_DATA((PyArrayObject *) min_dist_arr);
+    int *contact = (int *) PyArray_DATA((PyArrayObject *) contact_arr);
+    float *width = (float *) PyArray_DATA((PyArrayObject *) width_arr);
+    float *speed = (float *) PyArray_DATA((PyArrayObject *) speed_arr);
+    int offset = 0;
+    for (int i = 0; i < vec->num_envs && offset < cap; i++) {
+        Drive *drive = (Drive *) vec->envs[i];
+        c_get_walker_metrics(
+            drive,
+            cap - offset,
+            &idx[offset],
+            &completed[offset],
+            &start_step[offset],
+            &done_step[offset],
+            &duration[offset],
+            &min_dist[offset],
+            &contact[offset],
+            &width[offset],
+            &speed[offset]);
+        offset += drive->walker_count;
+    }
+    return PyLong_FromLong((long) offset);
+}
+
 // ── Co-simulation external-state setters (mirror vec_get_global_agent_state) ──
 // Co-sim runs a single env (num_envs == 1); these operate on vec->envs[0].
 static PyObject *vec_set_agent_states(PyObject *self, PyObject *args) {
@@ -1542,6 +1598,10 @@ static PyMethodDef methods[]
        {"shared", (PyCFunction) my_shared, METH_VARARGS | METH_KEYWORDS, "Shared state"},
        {"get_global_agent_state", get_global_agent_state, METH_VARARGS, "Get global agent state"},
        {"vec_get_global_agent_state", vec_get_global_agent_state, METH_VARARGS, "Get agent state from vectorized env"},
+       {"vec_get_walker_metrics",
+        vec_get_walker_metrics,
+        METH_VARARGS,
+        "K2 per-walker crossing metrics from a vectorized env"},
        {"vec_set_agent_states",
         vec_set_agent_states,
         METH_VARARGS,

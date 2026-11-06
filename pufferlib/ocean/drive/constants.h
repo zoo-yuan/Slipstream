@@ -213,6 +213,28 @@ static const float HAZARD_PRESET_WIDTH_M[HAZARD_PRESET_COUNT] = {1.9f, 2.5f, 2.4
 #define HAZARD_PRESET_BUS 1
 #define HAZARD_PRESET_TRUCK 2
 
+// K2 in-kernel scripted crossing walkers (0.5 m PEDESTRIAN slots, unicycle
+// constant-speed straight-line stepping inside c_step). Numbers mirror the
+// accepted M2 prototype (scripts/hazard_demo.py jaywalker tables).
+#define WALKER_SIZE_M 0.5f                 // square pedestrian slot box
+#define WALKER_CROSSWALK_CLEAR_M 12.0f     // mid-block: keep this far from any crosswalk segment
+#define WALKER_EDGE_SEARCH_M 25.0f         // kerb ray-cast reach for crossing width
+#define WALKER_MIN_EDGE_M 1.0f             // corridor sanity: road narrower than this is skipped
+#define WALKER_MAX_EDGE_M 15.0f            // corridor sanity: road wider than this is skipped
+#define WALKER_START_OUT_M 1.2f            // start this far OUTSIDE the near kerb (jaywalk by design: no edge check)
+#define WALKER_START_MAX_OUT_M 5.0f        // start-out clamp (prototype cap)
+#define WALKER_SPACING_M 15.0f             // min start-to-start distance between walkers
+#define WALKER_START_STAGGER_STEPS 12      // walker k starts at step 1 + k * this (prototype pacing)
+#define WALKER_LANE_MIN_LEN_M 30.0f        // crossing anchor lanes must be at least this long
+#define WALKER_S_MARGIN_M 8.0f             // anchor kept this far from the lane polyline ends
+#define WALKER_CONFLICT_MARGIN_M 0.15f     // walker start/end box inflation before the overlap check
+#define WALKER_RAY_EPS_M 0.05f             // ray hits closer than this to the origin are ignored
+
+// Same-step static hazards <-> walkers slot split: walkers own the tail slots
+// (last hazard_walkers_n_hi), the K1 classes share the head. With walkers
+// disabled the split collapses to the K1 budget (bit-identical stream).
+#define HAZARD_WALKER_MAX_COUNT 8          // init validation caps hazard_walkers_n_hi
+
 // Stop line geometry (spawn overlap check and IDM braking)
 #define STOP_LINE_DIST_SQ (10.0f * 10.0f)
 #define STOP_LINE_EXTENSION_FACTOR 1.5f

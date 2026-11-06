@@ -2133,6 +2133,12 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->hazard_cones_block_cols = (int) unpack(kwargs, "hazard_cones_block_cols");
     env->hazard_cones_spacing_m = (float) unpack(kwargs, "hazard_cones_spacing_m");
     env->hazard_cones_taper_prob = (float) unpack(kwargs, "hazard_cones_taper_prob");
+    // K2 in-kernel scripted crossing walker knobs (mirror the jaywalker config section).
+    env->hazard_walkers_enable = (int) unpack(kwargs, "hazard_walkers_enable");
+    env->hazard_walkers_n_lo = (int) unpack(kwargs, "hazard_walkers_n_lo");
+    env->hazard_walkers_n_hi = (int) unpack(kwargs, "hazard_walkers_n_hi");
+    env->hazard_walkers_speed_lo_mps = (float) unpack(kwargs, "hazard_walkers_speed_lo_mps");
+    env->hazard_walkers_speed_hi_mps = (float) unpack(kwargs, "hazard_walkers_speed_hi_mps");
     if (env->hazard_enable) {
         // Trust boundary: fail-fast on any malformed external config BEFORE the env runs.
         if (env->simulation_mode != SIMULATION_MODE_GIGAFLOW) {
@@ -2205,6 +2211,29 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
             && (!(env->hazard_cones_taper_prob >= 0.0f && env->hazard_cones_taper_prob <= 1.0f))) {
             PyErr_SetString(PyExc_ValueError, "hazard_cones_taper_prob must be in [0, 1]");
             return -1;
+        }
+        if (env->hazard_walkers_enable) {
+            if (!(env->hazard_walkers_n_lo >= 1 && env->hazard_walkers_n_lo <= env->hazard_walkers_n_hi)) {
+                PyErr_SetString(PyExc_ValueError, "hazard_walkers_n_lo/hi must satisfy 1 <= lo <= hi");
+                return -1;
+            }
+            if (env->hazard_walkers_n_hi > HAZARD_WALKER_MAX_COUNT) {
+                PyErr_SetString(PyExc_ValueError, "hazard_walkers_n_hi exceeds the walker slot cap");
+                return -1;
+            }
+            if (!(env->hazard_walkers_speed_lo_mps > 0.0f
+                    && env->hazard_walkers_speed_lo_mps <= env->hazard_walkers_speed_hi_mps)
+                || !isfinite(env->hazard_walkers_speed_hi_mps)) {
+                PyErr_SetString(PyExc_ValueError,
+                                "hazard_walkers_speed_lo/hi must satisfy 0 < lo <= hi (finite)");
+                return -1;
+            }
+            // walkers own the tail slots; the head budget must stay non-negative
+            if (env->cosim_partner_slots < env->hazard_walkers_n_hi) {
+                PyErr_SetString(PyExc_ValueError,
+                                "hazard_walkers_n_hi must fit within cosim_partner_slots (walker tail budget)");
+                return -1;
+            }
         }
     } else {
         env->hazard_clusters_layout = HAZARD_CLUSTER_LAYOUT_BOTH;

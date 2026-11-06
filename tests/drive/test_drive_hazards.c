@@ -278,12 +278,254 @@ static int test_hazard_steps_clean_and_neutral_knob_permutations(void) {
     return 0;
 }
 
+// =====================================================================================
+// K2 in-kernel scripted crossing walkers: PEDESTRIAN tail slots placed at reset and
+// advanced inside c_step (unicycle constant speed, straight line). Coverage: walker
+// disable leaves the episode stream bit-identical to the K1 hazard stream (the walker
+// block consumes no RNG draws and reserves no slots); same seed -> identical placement
+// and rollout; stepping invariants (per-step displacement = speed*dt, staggered start,
+// completion latch at the far edge line, freeze afterwards); type = PEDESTRIAN; static
+// slots stay metric-free (compute_metrics never runs on them = the minimal pedestrian
+// exemption). Zero-malloc is a code-walk property: place_crossing_walkers allocates
+// only at reset, move_walkers is O(walker_count) pure math with no allocation.
+// =====================================================================================
+
+// K1 hazard knobs stay exactly as hazard_test_env sets them; only the walker block
+// differs, so walker-off vs the K1 baseline isolates the walker code path.
+static Drive walker_test_env(const char *map_file, int num_agents, int slots, uint64_t seed, int walkers_on) {
+    Drive env = hazard_test_env(map_file, num_agents, slots, seed);
+    env.hazard_walkers_enable = walkers_on;
+    env.hazard_walkers_n_lo = 1;
+    env.hazard_walkers_n_hi = 2;
+    env.hazard_walkers_speed_lo_mps = 1.2f;
+    env.hazard_walkers_speed_hi_mps = 1.6f;
+    return env;
+}
+
+static int walker_streams_bit_identical(const Drive *a, const Drive *b) {
+    int obs_size = compute_observation_size((Drive *) a);
+    size_t bytes = (size_t) a->active_agent_count * (size_t) obs_size * sizeof(float);
+    return memcmp(a->observations, b->observations, bytes) == 0;
+}
+
+static int test_walker_disabled_keeps_episode_stream_bit_identical(void) {
+    // walkers off under the same seed must reproduce the K1 hazard stream exactly:
+    // no extra RNG draws, no slot reserve -> identical dynamic layout, identical
+    // static hazard layout, identical obs stream over a neutral-action rollout.
+    srand(7);
+    Drive k1 = hazard_test_env(drive_carla_map(), 32, 48, 42); // K1 baseline (no walker knobs set)
+    allocate(&k1);
+    hazard_full_reset(&k1);
+
+    Drive off = walker_test_env(drive_carla_map(), 32, 48, 42, 0);
+    allocate(&off);
+    hazard_full_reset(&off);
+
+    Drive on = walker_test_env(drive_carla_map(), 32, 48, 42, 1);
+    allocate(&on);
+    hazard_full_reset(&on);
+
+    EXPECT_EQ_INT(on.hazard_placed_walkers >= 1 && on.hazard_placed_walkers <= 2, 1);
+    EXPECT_EQ_INT(off.hazard_placed_walkers, 0);
+    EXPECT_EQ_INT(off.walker_count, 0);
+    // walkers-off == K1 baseline: full obs stream bit-identical
+    EXPECT_TRUE(walker_streams_bit_identical(&off, &k1));
+    for (int x = 0; x < off.active_agent_count; x++) {
+        const Agent *a = &off.agents[off.active_agent_indices[x]];
+        const Agent *b = &k1.agents[k1.active_agent_indices[x]];
+        EXPECT_NEAR(a->sim_x, b->sim_x, 0.0f);
+        EXPECT_NEAR(a->sim_y, b->sim_y, 0.0f);
+        EXPECT_NEAR(a->sim_heading, b->sim_heading, 0.0f);
+    }
+    // walkers-on: walker placement draws happen after every other draw in the
+    // episode, so the dynamic layout and the head (non-walker) static slots
+    // must stay identical to the walkers-off run
+    for (int x = 0; x < on.active_agent_count; x++) {
+        const Agent *a = &off.agents[off.active_agent_indices[x]];
+        const Agent *b = &on.agents[on.active_agent_indices[x]];
+        EXPECT_NEAR(a->sim_x, b->sim_x, 0.0f);
+        EXPECT_NEAR(a->sim_y, b->sim_y, 0.0f);
+    }
+    const int head_slots = 48 - on.hazard_walkers_n_hi;
+    for (int k = 0; k < head_slots; k++) {
+        const Agent *a = &off.agents[off.static_agent_indices[k]];
+        const Agent *b = &on.agents[on.static_agent_indices[k]];
+        EXPECT_NEAR(a->sim_x, b->sim_x, 0.0f);
+        EXPECT_NEAR(a->sim_y, b->sim_y, 0.0f);
+    }
+
+    int obs_size = compute_observation_size(&off);
+    for (int t = 0; t < 12; t++) {
+        drive_set_neutral_actions(&k1);
+        drive_set_neutral_actions(&off);
+        drive_set_neutral_actions(&on);
+        c_step(&k1);
+        c_step(&off);
+        c_step(&on);
+        EXPECT_TRUE(walker_streams_bit_identical(&off, &k1));
+        EXPECT_TRUE(drive_all_finite(on.observations, on.active_agent_count * obs_size));
+        for (int x = 0; x < on.active_agent_count; x++) {
+            const Agent *a = &off.agents[off.active_agent_indices[x]];
+            const Agent *b = &on.agents[on.active_agent_indices[x]];
+            EXPECT_NEAR(a->sim_x, b->sim_x, 0.0f);
+            EXPECT_NEAR(a->sim_y, b->sim_y, 0.0f);
+        }
+    }
+
+    free_allocated(&k1);
+    free_allocated(&off);
+    free_allocated(&on);
+    return 0;
+}
+
+static int test_walker_deterministic_same_seed(void) {
+    srand(7);
+    Drive env = walker_test_env(drive_carla_map(), 32, 48, 42, 1);
+    allocate(&env);
+    hazard_full_reset(&env);
+
+    const int base = hazard_slot_base(&env);
+    const int count = env.walker_count;
+    EXPECT_TRUE(count >= 1 && count <= 2);
+    // walkers own the reserved tail slots (last hazard_walkers_n_hi)
+    for (int k = 0; k < count; k++) {
+        EXPECT_EQ_INT(env.walkers[k].agent_idx, base + (48 - env.hazard_walkers_n_hi) + k);
+        EXPECT_EQ_INT(env.agents[env.walkers[k].agent_idx].type, PEDESTRIAN);
+    }
+
+    WalkerState snapshot[2];
+    float obs_before[2][2];
+    for (int k = 0; k < count; k++) {
+        snapshot[k] = env.walkers[k];
+        obs_before[k][0] = env.agents[env.walkers[k].agent_idx].sim_x;
+        obs_before[k][1] = env.agents[env.walkers[k].agent_idx].sim_y;
+    }
+
+    hazard_full_reset(&env);
+    EXPECT_EQ_INT(env.walker_count, count);
+    for (int k = 0; k < count; k++) {
+        const WalkerState *w = &env.walkers[k];
+        EXPECT_EQ_INT(w->agent_idx, snapshot[k].agent_idx);
+        EXPECT_EQ_INT(w->start_step, snapshot[k].start_step);
+        EXPECT_NEAR(w->start_x, snapshot[k].start_x, 0.0f);
+        EXPECT_NEAR(w->start_y, snapshot[k].start_y, 0.0f);
+        EXPECT_NEAR(w->speed_mps, snapshot[k].speed_mps, 0.0f);
+        EXPECT_NEAR(w->crossing_width_m, snapshot[k].crossing_width_m, 0.0f);
+        EXPECT_NEAR(env.agents[w->agent_idx].sim_x, obs_before[k][0], 0.0f);
+        EXPECT_NEAR(env.agents[w->agent_idx].sim_y, obs_before[k][1], 0.0f);
+    }
+
+    // a different seed must land elsewhere (layout is seed-driven, not fixed)
+    srand(7);
+    Drive other = walker_test_env(drive_carla_map(), 32, 48, 43, 1);
+    allocate(&other);
+    hazard_full_reset(&other);
+    EXPECT_TRUE(other.walker_count >= 1);
+    int any_diff = 0;
+    for (int k = 0; k < count && k < other.walker_count; k++) {
+        any_diff |= fabsf(other.walkers[k].start_x - snapshot[k].start_x) > 1e-4f
+            || fabsf(other.walkers[k].start_y - snapshot[k].start_y) > 1e-4f;
+    }
+    EXPECT_TRUE(any_diff);
+
+    free_allocated(&env);
+    free_allocated(&other);
+    return 0;
+}
+
+static int test_walker_stepping_completion_and_metrics(void) {
+    srand(7);
+    Drive env = walker_test_env(drive_carla_map(), 32, 48, 42, 1);
+    allocate(&env);
+    hazard_full_reset(&env);
+
+    const int count = env.walker_count;
+    int all_done_step = -1;
+    float prev_x[2], prev_y[2];
+    for (int k = 0; k < count; k++) {
+        prev_x[k] = env.agents[env.walkers[k].agent_idx].sim_x;
+        prev_y[k] = env.agents[env.walkers[k].agent_idx].sim_y;
+        EXPECT_EQ_INT(env.walkers[k].start_step, 1 + k * WALKER_START_STAGGER_STEPS);
+        // speed inside the sampled band
+        EXPECT_TRUE(env.walkers[k].speed_mps >= env.hazard_walkers_speed_lo_mps
+                    && env.walkers[k].speed_mps <= env.hazard_walkers_speed_hi_mps);
+        // start is off-road by design; lane association is never forced on walkers
+        EXPECT_EQ_INT(env.agents[env.walkers[k].agent_idx].current_lane_idx, -1);
+    }
+
+    for (int t = 1; t <= 85; t++) {
+        drive_set_neutral_actions(&env);
+        c_step(&env);
+        int all_done = 1;
+        for (int k = 0; k < count; k++) {
+            WalkerState *w = &env.walkers[k];
+            Agent *agent = &env.agents[w->agent_idx];
+            if (t < w->start_step) {
+                // waiting: pinned at the kerb, speed 0
+                EXPECT_NEAR(agent->sim_x, w->start_x, 1e-6f);
+                EXPECT_NEAR(agent->sim_speed, 0.0f, 1e-6f);
+                all_done = 0;
+                continue;
+            }
+            if (w->done_step >= 0) {
+                // frozen exactly on the far edge line (traveled == crossing width)
+                EXPECT_NEAR(w->traveled_m, w->crossing_width_m, 1e-5f);
+                EXPECT_NEAR(agent->sim_x, w->start_x + w->dir_x * w->crossing_width_m, 1e-4f);
+                EXPECT_NEAR(agent->sim_speed, 0.0f, 1e-6f);
+                EXPECT_EQ_INT(w->completed, 1);
+                continue;
+            }
+            all_done = 0;
+            float moved = compute_euclidean_distance(agent->sim_x, agent->sim_y, prev_x[k], prev_y[k]);
+            EXPECT_NEAR(moved, w->speed_mps * env.dt, 1e-4f); // unicycle: displacement = speed*dt
+            EXPECT_NEAR(agent->sim_speed, w->speed_mps, 1e-6f);
+            EXPECT_EQ_INT(w->done_step, -1);
+            // metrics accumulate only while crossing
+            EXPECT_TRUE(w->min_dist_m > 0.0f); // 32 spawned dynamics exist on this map
+        }
+        for (int k = 0; k < count; k++) {
+            prev_x[k] = env.agents[env.walkers[k].agent_idx].sim_x;
+            prev_y[k] = env.agents[env.walkers[k].agent_idx].sim_y;
+        }
+        if (all_done) {
+            all_done_step = t;
+            break;
+        }
+    }
+    EXPECT_TRUE(all_done_step > 0); // every walker reached the far edge inside the window
+    EXPECT_TRUE(all_done_step < 85); // the episode (scenario_length 91) outlives the crossings
+
+    // static slots stay infraction-free: compute_metrics never runs on walkers, so no
+    // red-light/stop-sign/offroad/collision infraction can ever latch onto them. The
+    // only metrics_array entries a walker carries are the cosim lane-association
+    // evidence columns (LANE_DIST/LANE_ANGLE) written by refresh_lane_association.
+    for (int k = 0; k < count; k++) {
+        const Agent *agent = &env.agents[env.walkers[k].agent_idx];
+        for (int m = 0; m < NUM_METRICS; m++) {
+            if (m == LANE_DIST_IDX || m == LANE_ANGLE_IDX) {
+                continue;
+            }
+            EXPECT_EQ_INT(agent->metrics_array[m] == 0.0f, 1);
+        }
+        EXPECT_EQ_INT(agent->controller, CONTROLLER_STATIC);
+        EXPECT_EQ_INT(agent->stopped, 0); // no infraction behavior ever applied
+        EXPECT_EQ_INT(agent->removed, 0);
+    }
+    EXPECT_EQ_INT(env.hazard_placed_walkers, count);
+
+    free_allocated(&env);
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     failures += test_hazard_disabled_keeps_episode_stream_bit_identical();
     failures += test_hazard_deterministic_same_seed_and_counts_in_budget();
     failures += test_hazard_legality_invariants();
     failures += test_hazard_steps_clean_and_neutral_knob_permutations();
+    failures += test_walker_disabled_keeps_episode_stream_bit_identical();
+    failures += test_walker_deterministic_same_seed();
+    failures += test_walker_stepping_completion_and_metrics();
     if (failures == 0) {
         printf("All test groups passed\n");
         return 0;

@@ -27,6 +27,26 @@ typedef struct TrafficControlElement TrafficControlElement;
 typedef struct GridMapEntity GridMapEntity;
 typedef struct GridMap GridMap;
 
+// K2 scripted crossing walker: one static co-sim slot driven by the kernel
+// (reset placement + c_step unicycle advance). The agent itself stays a normal
+// Agent (type = PEDESTRIAN); WalkerState carries the crossing plan and metrics.
+typedef struct {
+    int agent_idx;          // static slot this walker drives (fixed tail-slot layout)
+    float start_x, start_y; // kerb-side start pose (sim frame)
+    float z;
+    float heading;          // travel heading (toward the far kerb)
+    float dir_x, dir_y;     // unit travel direction == (cos, sin) of heading
+    float speed_mps;        // constant crossing speed (seed-sampled)
+    float crossing_width_m; // start -> far-side end distance (clears the far edge line = done)
+    float traveled_m;
+    int start_step;         // first timestep the walker advances (1 + k * WALKER_START_STAGGER_STEPS)
+    int done_step;          // timestep completion latched at (-1 = waiting / still crossing)
+    int completed;
+    float min_dist_m;       // min center distance to a valid dynamic agent while crossing (<0 = none observed)
+    int contact_events;     // rising edges of bare-OBB contact with dynamic agents
+    int was_in_contact;
+} WalkerState;
+
 struct Log {
     float n;
     float episode_return;
@@ -192,6 +212,20 @@ struct Drive {
     int hazard_cones_block_cols;
     float hazard_cones_spacing_m;
     float hazard_cones_taper_prob;
+    // K2 in-kernel scripted crossing walkers: PEDESTRIAN-typed static slots placed at reset and
+    // advanced inside c_step (unicycle constant speed, straight line). hazard_walkers_enable=false
+    // consumes no RNG draws, so walker-free episodes stay bit-identical to the K1 hazard stream.
+    int hazard_walkers_enable;
+    int hazard_walkers_n_lo;
+    int hazard_walkers_n_hi;
+    float hazard_walkers_speed_lo_mps;
+    float hazard_walkers_speed_hi_mps;
+    // Walker runtime: init-sized to hazard_walkers_n_hi (c_step is zero-malloc; walkers own the
+    // tail static slots so the K1 classes keep the head budget unchanged when walkers are off).
+    WalkerState *walkers;
+    int walker_capacity;
+    int walker_count;
+    int hazard_placed_walkers;
     // Last-reset placement counts (diagnostics/tests); reset before every placement attempt.
     int hazard_placed_parked;
     int hazard_placed_cluster_cars;
@@ -3411,6 +3445,13 @@ void set_active_agents(Drive *env) {
         }
         env->static_agent_count = partner_slots;
 
+        // K2 walker runtime: init-sized to the validated walker high (c_step never allocates)
+        env->walker_capacity = (env->hazard_enable && env->hazard_walkers_enable) ? env->hazard_walkers_n_hi : 0;
+        env->walkers = env->walker_capacity > 0
+            ? (WalkerState *) calloc((size_t) env->walker_capacity, sizeof(WalkerState))
+            : NULL;
+        env->walker_count = 0;
+
         for (int i = 0; i < successfully_created; i++) {
             env->active_agent_indices[i] = active_agent_indices[i];
             env->agents[active_agent_indices[i]].controller
@@ -3768,6 +3809,7 @@ void c_close(Drive *env) {
     free(env->obs_neighbor_scratch);
     free(env->static_agent_indices);
     free(env->expert_static_agent_indices);
+    free(env->walkers);
     free_loaded_map_data(env);
 }
 
@@ -3824,6 +3866,36 @@ int get_track_id_or_placeholder(Drive *env, int agent_idx) {
 }
 
 // include_static: also write the static partner slots after the active agents (co-sim BEV/debug).
+// K2 per-walker crossing metrics for the demo render pipeline (episode_log is per
+// active agent, so walkers expose through this dedicated getter instead).
+void c_get_walker_metrics(
+    Drive *env,
+    int count_cap,
+    int *idx_out,
+    int *completed_out,
+    int *start_step_out,
+    int *done_step_out,
+    float *duration_s_out,
+    float *min_dist_out,
+    int *contact_out,
+    float *width_out,
+    float *speed_out) {
+    int count = env->walker_count < count_cap ? env->walker_count : count_cap;
+    for (int k = 0; k < count; k++) {
+        const WalkerState *w = &env->walkers[k];
+        idx_out[k] = w->agent_idx;
+        completed_out[k] = w->completed;
+        start_step_out[k] = w->start_step;
+        done_step_out[k] = w->done_step; // -1 = not finished
+        // prototype duration: whole steps in motion x dt (done step inclusive)
+        duration_s_out[k] = w->done_step >= 0 ? (float) (w->done_step - w->start_step + 1) * env->dt : -1.0f;
+        min_dist_out[k] = w->min_dist_m; // <0 = no valid dynamic agent seen while crossing
+        contact_out[k] = w->contact_events;
+        width_out[k] = w->crossing_width_m;
+        speed_out[k] = w->speed_mps;
+    }
+}
+
 void c_get_global_agent_state(
     Drive *env,
     int include_static,
@@ -4258,12 +4330,13 @@ static Agent hazard_make_agent(float x, float y, float z, float heading, float l
 }
 
 // OBB overlap against every valid agent (dynamics + already-committed hazards),
-// with the candidate padded by HAZARD_CONFLICT_MARGIN_M (prototype margin).
+// with the candidate padded by `margin_m` (K1 hazards: HAZARD_CONFLICT_MARGIN_M;
+// K2 walkers: WALKER_CONFLICT_MARGIN_M, the task's conservative band).
 // `exempt` lists agent indices skipped by the check (the other cluster member).
-static bool hazard_pose_conflicts(Drive *env, const Agent *cand, const int *exempt, int exempt_count) {
+static bool hazard_pose_conflicts(Drive *env, const Agent *cand, const int *exempt, int exempt_count, float margin_m) {
     Agent inflated = *cand;
-    inflated.sim_length += 2.0f * HAZARD_CONFLICT_MARGIN_M;
-    inflated.sim_width += 2.0f * HAZARD_CONFLICT_MARGIN_M;
+    inflated.sim_length += 2.0f * margin_m;
+    inflated.sim_width += 2.0f * margin_m;
     update_agent_radius(&inflated);
 
     for (int i = 0; i < env->num_total_agents; i++) {
@@ -4337,15 +4410,220 @@ static int hazard_draw_count(Drive *env, int lo, int hi) {
     return lo + rng_below(&env->rng_state, hi - lo + 1);
 }
 
+// =====================================================================================
+// K2: in-kernel scripted crossing walkers
+//
+// Port of the accepted M2 prototype (scripts/hazard_demo.py plan_walkers):
+// mid-block crossing spots on straight lanes (>= WALKER_LANE_MIN_LEN_M, anchored
+// away from the polyline ends), >= WALKER_CROSSWALK_CLEAR_M from any crosswalk
+// segment (the bins expose no junction-type elements, so crosswalk distance is
+// the intersection-avoidance proxy), kerb-to-kerb width ray-cast on the road
+// edges both ways with the prototype corridor sanity bounds. The walker starts
+// OUTSIDE the near kerb (jaywalking is a violation by design: no off-road
+// check) and walks a straight line to the far side; c_step advances it at
+// constant speed and freezes it at the far edge line (done). Placement reuses
+// the K1 rejection machinery (hazard_pose_conflicts) with the wider walker
+// conservative band; RNG = env->rng_state (the episode stream), so one episode
+// seed reproduces the full layout. Walkers commit as type=PEDESTRIAN slots —
+// static slots never enter compute_metrics, so no red-light/stop-sign/offroad
+// infraction can ever latch onto them (K3's dynamic-agent exemption gate is a
+// separate concern). Reset path only; c_step is O(walker_count) pure math.
+// =====================================================================================
+
+typedef struct {
+    float ax, ay, bx, by;
+} WalkerSeg;
+
+static float walker_min_seg_dist(float px, float py, const WalkerSeg *segs, int count) {
+    // empty segment set = infinitely far (prototype np.inf semantics), never a rejection
+    if (count <= 0) {
+        return 1e30f;
+    }
+    float best = 1e30f;
+    for (int i = 0; i < count; i++) {
+        float d = compute_point_to_segment_distance(px, py, segs[i].ax, segs[i].ay, segs[i].bx, segs[i].by);
+        if (d < best) {
+            best = d;
+        }
+    }
+    return best;
+}
+
+// Smallest t in (WALKER_RAY_EPS_M, max_m] with p + t*d on a segment (0<=u<=1);
+// -1 when nothing is hit. Prototype ray_first_hit (kerb-to-kerb width).
+static float walker_ray_first_hit(float px, float py, float dx, float dy, const WalkerSeg *segs, int count) {
+    float best = -1.0f;
+    for (int i = 0; i < count; i++) {
+        float vx = segs[i].bx - segs[i].ax;
+        float vy = segs[i].by - segs[i].ay;
+        float det = vx * dy - vy * dx;
+        if (fabsf(det) < 1e-9f) {
+            continue;
+        }
+        float rx = segs[i].ax - px;
+        float ry = segs[i].ay - py;
+        float t = (vx * ry - vy * rx) / det;
+        float u = (dx * ry - dy * rx) / det;
+        if (t > WALKER_RAY_EPS_M && u >= 0.0f && u <= 1.0f) {
+            if (best < 0.0f || t < best) {
+                best = t;
+            }
+        }
+    }
+    return best;
+}
+
+static void place_crossing_walkers(Drive *env, const HazardLane *lanes, int lane_count, int hazard_budget) {
+    env->hazard_placed_walkers = 0;
+    env->walker_count = 0;
+    if (!env->hazard_walkers_enable || env->walkers == NULL || env->walker_capacity <= 0) {
+        return; // disabled / init allocation failed: zero RNG draws, zero placement
+    }
+
+    // Crosswalk + road-edge polyline segments as flat scratch arrays (reset path: malloc allowed).
+    int cross_count = 0, edge_count = 0;
+    for (int i = 0; i < env->num_road_elements; i++) {
+        const RoadMapElement *e = &env->road_elements[i];
+        int segs = e->segment_size - 1;
+        if (segs <= 0) {
+            continue;
+        }
+        if (e->type == MISC_CROSSWALK) {
+            cross_count += segs;
+        } else if (is_road_edge(e->type)) {
+            edge_count += segs;
+        }
+    }
+    WalkerSeg *cross_segs = (WalkerSeg *) malloc((size_t) (cross_count > 0 ? cross_count : 1) * sizeof(WalkerSeg));
+    WalkerSeg *edge_segs = (WalkerSeg *) malloc((size_t) (edge_count > 0 ? edge_count : 1) * sizeof(WalkerSeg));
+    if (cross_segs == NULL || edge_segs == NULL) {
+        free(cross_segs);
+        free(edge_segs);
+        return; // allocation failure degrades to a walker-free episode, never a broken reset
+    }
+    int ci = 0, ei = 0;
+    for (int i = 0; ci < cross_count || ei < edge_count; i++) {
+        if (i >= env->num_road_elements) {
+            break;
+        }
+        const RoadMapElement *e = &env->road_elements[i];
+        int segs = e->segment_size - 1;
+        for (int k = 0; k < segs; k++) {
+            WalkerSeg seg = {e->x[k], e->y[k], e->x[k + 1], e->y[k + 1]};
+            if (e->type == MISC_CROSSWALK && ci < cross_count) {
+                cross_segs[ci++] = seg;
+            } else if (is_road_edge(e->type) && ei < edge_count) {
+                edge_segs[ei++] = seg;
+            }
+        }
+    }
+
+    int want = hazard_draw_count(env, env->hazard_walkers_n_lo, env->hazard_walkers_n_hi);
+    // walkers own the reserved tail slots; hazard_budget is the head the K1 classes may use
+    const int first_walker_slot = env->num_controllable_agents + hazard_budget;
+    int placed = 0;
+    for (int k = 0; k < want && placed < env->walker_capacity; k++) {
+        int committed = 0;
+        for (int attempt = 0; attempt < HAZARD_MAX_PLACE_ATTEMPTS && !committed; attempt++) {
+            int li = hazard_pick_lane(lanes, lane_count, &env->rng_state, WALKER_LANE_MIN_LEN_M, 1);
+            if (li < 0) {
+                break; // no straight lane long enough: give up on this walker
+            }
+            const RoadMapElement *element = &env->road_elements[lanes[li].element_idx];
+            float s = sample_uniform(&env->rng_state, WALKER_S_MARGIN_M, lanes[li].total - WALKER_S_MARGIN_M);
+            float x, y, z, heading;
+            hazard_pose_at(element, s, 0.0f, &x, &y, &z, &heading);
+            if (walker_min_seg_dist(x, y, cross_segs, cross_count) < WALKER_CROSSWALK_CLEAR_M) {
+                continue;
+            }
+            float perp_x = -sinf(heading), perp_y = cosf(heading);
+            float d_pos = walker_ray_first_hit(x, y, perp_x, perp_y, edge_segs, edge_count);
+            float d_neg = walker_ray_first_hit(x, y, -perp_x, -perp_y, edge_segs, edge_count);
+            if (d_pos < 0.0f || d_neg < 0.0f) {
+                continue;
+            }
+            if (!(WALKER_MIN_EDGE_M <= fminf(d_pos, d_neg) && fmaxf(d_pos, d_neg) <= WALKER_MAX_EDGE_M)) {
+                continue;
+            }
+            float side = sample_uniform(&env->rng_state, 0.0f, 1.0f) < 0.5f ? 1.0f : -1.0f;
+            float d_start = side > 0.0f ? d_pos : d_neg;
+            float d_end = side > 0.0f ? d_neg : d_pos;
+            float out0 = fminf(d_start + WALKER_START_OUT_M, WALKER_START_MAX_OUT_M);
+            float out1 = fminf(d_end + WALKER_START_OUT_M, WALKER_START_MAX_OUT_M);
+            float sx = x + side * perp_x * out0;
+            float sy = y + side * perp_y * out0;
+            float ex = x - side * perp_x * out1;
+            float ey = y - side * perp_y * out1;
+            float walk_h = atan2f(-side * perp_y, -side * perp_x); // heading = travel direction
+
+            // start AND end poses must stay clear of every agent at the walker band
+            Agent start_probe = hazard_make_agent(sx, sy, z, walk_h, WALKER_SIZE_M, WALKER_SIZE_M);
+            Agent end_probe = hazard_make_agent(ex, ey, z, walk_h, WALKER_SIZE_M, WALKER_SIZE_M);
+            if (hazard_pose_conflicts(env, &start_probe, NULL, 0, WALKER_CONFLICT_MARGIN_M)
+                || hazard_pose_conflicts(env, &end_probe, NULL, 0, WALKER_CONFLICT_MARGIN_M)) {
+                continue;
+            }
+            // spacing against walkers already placed this episode
+            int spacing_conflict = 0;
+            for (int r = 0; r < placed; r++) {
+                float dx = sx - env->walkers[r].start_x;
+                float dy = sy - env->walkers[r].start_y;
+                if (dx * dx + dy * dy < WALKER_SPACING_M * WALKER_SPACING_M) {
+                    spacing_conflict = 1;
+                    break;
+                }
+            }
+            if (spacing_conflict) {
+                continue;
+            }
+
+            WalkerState *w = &env->walkers[placed];
+            *w = (WalkerState) {0};
+            w->agent_idx = first_walker_slot + placed;
+            w->start_x = sx;
+            w->start_y = sy;
+            w->z = z;
+            w->heading = walk_h;
+            w->dir_x = cosf(walk_h);
+            w->dir_y = sinf(walk_h);
+            w->speed_mps = sample_uniform(
+                &env->rng_state, env->hazard_walkers_speed_lo_mps, env->hazard_walkers_speed_hi_mps);
+            w->crossing_width_m = compute_euclidean_distance(sx, sy, ex, ey);
+            w->traveled_m = 0.0f;
+            w->start_step = 1 + placed * WALKER_START_STAGGER_STEPS;
+            w->done_step = -1;
+            w->min_dist_m = -1.0f;
+
+            Agent walker = hazard_make_agent(sx, sy, z, walk_h, WALKER_SIZE_M, WALKER_SIZE_M);
+            hazard_commit_agent(env, w->agent_idx, &walker);
+            env->agents[w->agent_idx].type = PEDESTRIAN; // the K2 type correction: no more fake small cars
+            placed++;
+            committed = 1;
+        }
+        // unplaceable ordinal: dropped (prototype raised; the kernel places fewer and reports the count)
+    }
+    env->hazard_placed_walkers = placed;
+    env->walker_count = placed;
+    free(cross_segs);
+    free(edge_segs);
+}
+
 static void place_static_hazards(Drive *env) {
     env->hazard_placed_parked = 0;
     env->hazard_placed_cluster_cars = 0;
     env->hazard_placed_cones = 0;
+    env->hazard_placed_walkers = 0;
     env->hazard_reject_no_slot = 0;
+    env->walker_count = 0;
     if (!env->hazard_enable || env->simulation_mode != SIMULATION_MODE_GIGAFLOW
         || env->cosim_partner_slots <= 0 || env->agents == NULL) {
         return;
     }
+
+    // K2 slot split: walkers own the tail (last hazard_walkers_n_hi slots), the K1
+    // classes share the head budget. Walkers off -> reserve 0 -> exact K1 budget.
+    int walker_reserve = (env->hazard_walkers_enable && env->walkers != NULL) ? env->hazard_walkers_n_hi : 0;
+    const int max_slots = env->cosim_partner_slots - walker_reserve;
 
     // Take ownership of every static slot for this episode: a stale pose from an
     // earlier episode must never leak into the new layout.
@@ -4365,7 +4643,6 @@ static void place_static_hazards(Drive *env) {
     int parked_record_count = 0;
     int slot_cursor = 0; // next free static slot offset; agent idx = num_controllable_agents + slot_cursor
     const int first_slot_agent = env->num_controllable_agents;
-    const int max_slots = env->cosim_partner_slots;
     int exempt[1];
 
     // --- parked vehicles: lane-anchored, kerbside half-on-road, heading-aligned ---
@@ -4406,7 +4683,7 @@ static void place_static_hazards(Drive *env) {
                     continue;
                 }
                 Agent candidate = hazard_make_agent(x, y, z, heading, length, width);
-                if (hazard_pose_conflicts(env, &candidate, exempt, 0)) {
+                if (hazard_pose_conflicts(env, &candidate, exempt, 0, HAZARD_CONFLICT_MARGIN_M)) {
                     continue;
                 }
                 if (check_spawn_offroad(env, &candidate, HAZARD_EDGE_CLEARANCE_M)) {
@@ -4503,12 +4780,12 @@ static void place_static_hazards(Drive *env) {
                 if (!check_obb_collision(&agent_a, &agent_b)) {
                     continue; // intentional overlap must hold (prototype cluster_overlap_failed)
                 }
-                if (hazard_pose_conflicts(env, &agent_a, exempt, 0)
+                if (hazard_pose_conflicts(env, &agent_a, exempt, 0, HAZARD_CONFLICT_MARGIN_M)
                     || check_spawn_offroad(env, &agent_a, HAZARD_EDGE_CLEARANCE_M)) {
                     continue;
                 }
                 exempt[0] = first_slot_agent + slot_cursor; // slot A commits next: exempt it for B
-                if (hazard_pose_conflicts(env, &agent_b, exempt, 1)
+                if (hazard_pose_conflicts(env, &agent_b, exempt, 1, HAZARD_CONFLICT_MARGIN_M)
                     || check_spawn_offroad(env, &agent_b, HAZARD_EDGE_CLEARANCE_M)) {
                     continue;
                 }
@@ -4601,7 +4878,8 @@ static void place_static_hazards(Drive *env) {
                 for (int k = 0; k < cone_count && zone_ok; k++) {
                     Agent cone = hazard_make_agent(
                         cone_xs[k], cone_ys[k], cone_zs[k], cone_hs[k], HAZARD_CONE_SIZE_M, HAZARD_CONE_SIZE_M);
-                    if (hazard_pose_conflicts(env, &cone, exempt, 0) || check_spawn_offroad(env, &cone, HAZARD_EDGE_CLEARANCE_M)) {
+                    if (hazard_pose_conflicts(env, &cone, exempt, 0, HAZARD_CONFLICT_MARGIN_M)
+                        || check_spawn_offroad(env, &cone, HAZARD_EDGE_CLEARANCE_M)) {
                         zone_ok = 0;
                     }
                 }
@@ -4623,6 +4901,9 @@ static void place_static_hazards(Drive *env) {
             }
         }
     }
+
+    // --- K2 scripted crossing walkers: PEDESTRIAN tail slots, unicycle-stepped in c_step ---
+    place_crossing_walkers(env, lanes, lane_count, max_slots);
 
     free(lanes);
     free(parked_records);
@@ -6249,6 +6530,58 @@ static void record_short_early_reset(Drive *env) {
         (unsigned long long) env->episode_seed);
 }
 
+// K2: advance the scripted walkers inside c_step. O(walker_count) pure math +
+// the min-distance/contact scans over active agents; zero allocation (hot-path
+// contract). Waiting walkers stand at the kerb, finished walkers stay frozen at
+// the far edge line (the prototype leaves them standing with v=0 too).
+static void move_walkers(Drive *env) {
+    for (int k = 0; k < env->walker_count; k++) {
+        WalkerState *w = &env->walkers[k];
+        if (w->done_step >= 0 || env->timestep < w->start_step) {
+            continue;
+        }
+        Agent *agent = &env->agents[w->agent_idx];
+        copy_pose_to_prev(agent); // swept checks must see exactly this step's motion segment
+        w->traveled_m += w->speed_mps * env->dt;
+        int reached = w->traveled_m >= w->crossing_width_m;
+        if (reached) {
+            w->traveled_m = w->crossing_width_m;
+            w->done_step = env->timestep;
+            w->completed = 1;
+        }
+        agent->sim_x = w->start_x + w->dir_x * w->traveled_m;
+        agent->sim_y = w->start_y + w->dir_y * w->traveled_m;
+        float v = reached ? 0.0f : w->speed_mps;
+        agent->sim_vx = w->dir_x * v;
+        agent->sim_vy = w->dir_y * v;
+        update_agent_speed(agent);
+
+        // Per-walker metrics while crossing: min center distance to any valid
+        // dynamic agent + rising edges of bare-OBB contact (radius-pruned SAT).
+        int contact_now = 0;
+        for (int i = 0; i < env->active_agent_count; i++) {
+            const Agent *other = &env->agents[env->active_agent_indices[i]];
+            if (other->sim_x == INVALID_POSITION || other->sim_valid != 1 || other->removed) {
+                continue;
+            }
+            float dx = other->sim_x - agent->sim_x;
+            float dy = other->sim_y - agent->sim_y;
+            float d = sqrtf(dx * dx + dy * dy);
+            if (w->min_dist_m < 0.0f || d < w->min_dist_m) {
+                w->min_dist_m = d;
+            }
+            float max_overlap = agent->radius + other->radius;
+            if (d <= max_overlap && check_obb_collision(agent, (Agent *) other)) {
+                contact_now = 1;
+            }
+        }
+        if (contact_now && !w->was_in_contact) {
+            w->contact_events++;
+        }
+        w->was_in_contact = contact_now;
+    }
+}
+
 void c_step(Drive *env) {
     // In eval, a scenario is evaluated once: hold the env after its episode
     // ended, so a short episode does not replay and re-emit within the window.
@@ -6297,6 +6630,11 @@ void c_step(Drive *env) {
             move_expert(env, agent_idx);
         }
     }
+
+    // K2: kernel-driven scripted walkers (static slots; straight unicycle advance,
+    // fresh pose visible to this step's collision/metrics loops like the prototype's
+    // set_agent_states-before-step order).
+    move_walkers(env);
 
     // Update stopped-duration for every agent (active + replayed/static), not
     // just policy-controlled ones, so the partner seconds_stopped observation is

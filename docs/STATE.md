@@ -20,15 +20,17 @@ As-of: a39c94b
 - `docs/2026-11-03-Terra系列全景与PufferDrive落地路线.md` — 自 `../PufferDrive` 仓拷入的冻结分析（五成分因果链、缺口分析、逐工作落地映射）；原仓有同源版本与 ADR 语境。
 - `.wayfinder/research/` — 四份调研产物（TerraZero 报告精读 / log→map 管线 / 可借件盘点 / 规则执法核对），随票 Resolution 索引。
 
-## Next（下一步）
+## Next（执行清单，2026-11-05 地图完成后移交，按优先级）
 
-- wayfinder 前余两张 HITL：训练配方立场（票 06：零演示 vs 混合 vs SPACeR 锚定 + progress shaping 补刀）；异质保真档位（票 08）。
-- 雾区候切：hazard 内核子系统化（等 06/08）；nuPlan 数据获取与 license 核验（等外部验收需求正式化）。
-- P1：训练配方立场（票 06，含 progress shaping 补刀裁决）；异质保真档位（票 08）。
-- P1：评测资产就位（票 09：内部 E1a/E1b 依赖清单 + InterPlan 克隆核验 + val14 harness 选型）。
-- 随后：规则执法三补丁（红灯 footprint 扫越 / 停牌 dwell 采样化 / 行人豁免 gate，≈2-4 工程日，见 rule-enforcement-checklist）。
+1. **hazard 内核子系统化**：C 侧内生放置（原型→生产）+ 脚本横穿者内核化（票 08）+ 真值配时开关（票 06）+ 规则执法三补丁（红灯 footprint 扫越/停牌 dwell 采样/行人豁免 gate，见 rule-enforcement-checklist）。
+2. **零演示 RL 主轴训练 run**：progress shaping 补齐 + 评测期条件化 + 既有 reward conditioning；混合对手旋钮保留非默认。
+3. **异质 sim-agent 线**：骑行者 bicycle 网格 + 卡车分布扩展 + per-type heads（65K 轻量线起点，WOSAC 角色）。
+4. **外部验收**：nuPlan 数据获取（license 核验）→ 仓内 cosim/nuplan 栈跑通 val14 → InterPlan 接入。
+5. **log→map 摄取**：Apollo G1-G3 几何转换器 + WOMD/nuPlan strip-agents 工具（单一中间表示 + bin writer，五源共享）。
+6. E1a/E1b：补桥三件套 G8/G9/G3 + Nova 权重（owner 侧解锁）。
 
 ## Long-term（长期不变量）
 
-- 与 `../PufferDrive` 仓 STATE 的集成目标一致：rino 数据湖 + 混合智能体闭环世界，在 Nova 19 输入 / 4 输出契约内训练 planner；TerraZero 复刻 = 场景多样性与 self-play 能力的供给线。
+- **双目标（owner 战略框架，2026-11-05 定）**：①复现 TerraZero（始终如一）；②在 TerraZero 类环境上训练出**实际可部署、在真实世界（运营 log）拿到 SOTA** 的能力——RL 是确定性路径，replay/IDM/policy 等混合手段增大这个概率。
+- 与 `../PufferDrive` 仓集成目标一致：rino 数据湖 + 混合智能体闭环世界，在 Nova 19 输入 / 4 输出契约内训练 planner；TerraZero 复刻 = 场景多样性与 self-play 能力供给线。
 - 上游跟进纪律：`upstream` 只读；`9_bernhard_dev` 挖矿不并基线；AGPL（behavior-bench）只读不并入。

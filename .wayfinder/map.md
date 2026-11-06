@@ -23,14 +23,16 @@
 - [基线导入执行：3.0 历史进 Slipstream master + 工程约定初始化](tickets/11-基线导入执行.md)：已执行——拉最新上游后基线 = `3.0@2c1ca3e4`（比 80a681b4 新 6 提交：Longest6v1/Alpasim eval、overspeed reward 调整）；保留全历史；tag `baseline/pufferdrive-3.0-2c1ca3e4`；资产/strata 两提交（a920284、0ebd01d）。
 - [hazard 生成器最小原型](tickets/07-hazard生成器最小原型.md)：M0-M3 全验收——四模式 demo（baseline/static/jaywalker/mix）+ YAML 旋钮 + 32 tests + 回归双门像素级；内核零改动（Python 侧放置/步进）；锚点 200/31/0；内核子系统化入雾区。
 - [评测资产就位](tickets/09-评测资产就位.md)：InterPlan=Apache-2.0 已就位（80+335 场景，缺 nuPlan 数据）；**val14 新发现：基线自带 MIT 官方闭环栈（cosim/nuplan），推翻 AGPL 前提**（05 票已修正）；E1a/E1b 依赖清单：公共 7 具备/4 缺/3 阻塞，E1a 另缺 Nova 权重。
+- [训练配方立场](tickets/06-训练配方立场-零演示vs混合vs锚定.md)：零演示纯 RL 主轴 + 混合对手保留为配置能力（owner 框架：RL=确定性路径，混合=增大概率）；progress shaping 补、评测期条件化采纳、真值配时开关立项、轻量 sim-agent 线并行；SPACeR 主轴不采纳但留门。
+- [异质 agent 保真档位](tickets/08-异质agent保真档位.md)：行人=脚本横穿者内核化（先行）；骑行者=bicycle 网格 + 卡车=分布扩展（随 sim-agent 线）；挂车不做。
+
+## 地图完成（2026-11-05）
+
+全部 11 张票关闭，雾区清空（各雾项已随对应票裁决或转入执行清单），**destination 达成：复刻路线 spec 锁齐，无剩余路线级决策**。执行移交：优先级清单见 `docs/STATE.md` Next。
 
 ## Not yet specified
 
-- SPACeR 参考锚定与场景生成层的叠加关系——若「训练配方立场」选混合/锚定路线才展开。
-- **hazard 内核子系统化**（C reset 内生放置/真 PEDESTRIAN type/per-agent IDM 变体）——原型已验证概念与规格锚点（票 07），范围依赖「异质保真档位」与「训练配方立场」裁决后才能切票。
-- 大规模训练稳定性细节（lr/entropy/batch 随步数的调度）——等配方立场落定（算力已定单服务器 GPU）。
-- gigaflow 真值配时保真开关（若验收要求自有 ODD 真实信号配时；小改 drive.h:3009 块）——03 票反方论点，验收已定内部优先，倾向不做，待配方票一并确认。
-- 源→中间几何表示→单一 bin writer 的统一摄取架构（五源共享）——03 票执行者建议，随生成层设计展开。
+（已清空——2026-11-05 地图完成：雾项全部随 06/08 裁决落位或转入执行清单）
 
 ## Out of scope
 

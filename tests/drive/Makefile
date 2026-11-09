@@ -20,7 +20,8 @@ UNIT_SRCS := \
 	test_drive_idm.c \
 	test_drive_speed_limits.c \
 	test_drive_cosim_setters.c \
-	test_drive_hazards.c
+	test_drive_hazards.c \
+	test_drive_pedestrian_exempt.c
 SMOKE_SRCS := test_drive_env_smoke.c
 PERF_SRCS := test_perf.c
 

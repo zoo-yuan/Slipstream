@@ -180,6 +180,138 @@ static int test_no_lane_assignment_still_flags(void) {
     return 0;
 }
 
+// --- K3 footprint sweep knob: full-body swept path vs the stop bar (TerraZero semantics) ---
+
+static Drive drive_test_sweep_env(TrafficControlElement *tc) {
+    Drive env = drive_test_light_env(tc);
+    env.traffic_light_footprint_sweep = 1;
+    return env;
+}
+
+static Agent drive_test_sweep_agent(float prev_x, float prev_y, float cur_x, float cur_y, float heading, float length) {
+    Agent agent = drive_test_agent(prev_x, prev_y, heading);
+    agent.sim_length = length;
+    update_agent_radius(&agent);
+    agent.sim_x = cur_x;
+    agent.sim_y = cur_y;
+    return agent;
+}
+
+// Clip case the legacy centre point misses: an 8 m vehicle angled 0.3 rad whose nose sweeps onto
+// the bar while the centre stays well before the line. Legacy: no flag; sweep: flagged.
+static int test_sweep_catches_center_miss_clip(void) {
+    TrafficControlElement tc = drive_test_light();
+    set_light(TRAFFIC_CONTROL_STATE_RED);
+
+    Agent legacy = drive_test_sweep_agent(-4.5f, 0.0f, -3.35f, 0.356f, 0.3f, 8.0f);
+    Drive legacy_env = drive_test_light_env(&tc);
+    legacy_env.agents = &legacy;
+    EXPECT_TRUE(!check_red_light_violation(&legacy_env, 0));
+
+    Agent swept = drive_test_sweep_agent(-4.5f, 0.0f, -3.35f, 0.356f, 0.3f, 8.0f);
+    Drive swept_env = drive_test_sweep_env(&tc);
+    swept_env.agents = &swept;
+    EXPECT_TRUE(check_red_light_violation(&swept_env, 0));
+    return 0;
+}
+
+// A vehicle waiting astride the bar is never flagged ("not merely for waiting within the region").
+static int test_sweep_stationary_straddle_no_flag(void) {
+    TrafficControlElement tc = drive_test_light();
+    Drive env = drive_test_sweep_env(&tc);
+    set_light(TRAFFIC_CONTROL_STATE_RED);
+    Agent agent = drive_test_sweep_agent(-0.5f, 0.0f, -0.5f, 0.0f, 0.0f, 4.0f);
+    env.agents = &agent;
+    EXPECT_TRUE(!check_red_light_violation(&env, 0));
+    return 0;
+}
+
+// Begin-contact edge trigger: a vehicle already astride the bar when the red tick arrives is
+// treated as committed - proceeding without a fresh bar contact is not re-flagged (the legacy
+// centre-point rule still flags the same motion; documented knob-on difference).
+static int test_sweep_straddle_then_proceed_not_reflagged(void) {
+    TrafficControlElement tc = drive_test_light();
+    set_light(TRAFFIC_CONTROL_STATE_RED);
+
+    Agent legacy = drive_test_sweep_agent(-1.5f, 0.0f, 0.5f, 0.0f, 0.0f, 4.0f);
+    Drive legacy_env = drive_test_light_env(&tc);
+    legacy_env.agents = &legacy;
+    EXPECT_TRUE(check_red_light_violation(&legacy_env, 0));
+
+    Agent swept = drive_test_sweep_agent(-1.5f, 0.0f, 0.5f, 0.0f, 0.0f, 4.0f);
+    Drive swept_env = drive_test_sweep_env(&tc);
+    swept_env.agents = &swept;
+    EXPECT_TRUE(!check_red_light_violation(&swept_env, 0));
+    return 0;
+}
+
+// The sweep fires once, on the first tick the body reaches the bar (one tick earlier than the
+// legacy centre-point rule), and never again while traversing.
+static int test_sweep_fires_once_on_first_body_contact(void) {
+    TrafficControlElement tc = drive_test_light();
+    Drive env = drive_test_sweep_env(&tc);
+    set_light(TRAFFIC_CONTROL_STATE_RED);
+
+    // tick 0: box entirely before the bar (nose 0.5 m short of it)
+    Agent agent = drive_test_sweep_agent(-3.0f, 0.0f, -2.5f, 0.0f, 0.0f, 4.0f);
+    env.agents = &agent;
+    EXPECT_TRUE(!check_red_light_violation(&env, 0));
+    // tick 1: box straddles the bar -> fires
+    agent = drive_test_sweep_agent(-2.5f, 0.0f, -1.5f, 0.0f, 0.0f, 4.0f);
+    EXPECT_TRUE(check_red_light_violation(&env, 0));
+    // ticks 2-3: bar already overlaps at the previous pose -> no refire
+    agent = drive_test_sweep_agent(-1.0f, 0.0f, -0.5f, 0.0f, 0.0f, 4.0f);
+    EXPECT_TRUE(!check_red_light_violation(&env, 0));
+    agent = drive_test_sweep_agent(-0.5f, 0.0f, 0.5f, 0.0f, 0.0f, 4.0f);
+    EXPECT_TRUE(!check_red_light_violation(&env, 0));
+    // tick 4: box fully past the bar -> clean
+    agent = drive_test_sweep_agent(0.5f, 0.0f, 1.5f, 0.0f, 0.0f, 4.0f);
+    EXPECT_TRUE(!check_red_light_violation(&env, 0));
+    return 0;
+}
+
+// The footprint replaces the legacy 15 m virtual extension: a centre crossing far beside the bar
+// with no body contact is not a violation under the sweep (legacy still flags it).
+static int test_sweep_lateral_pass_without_contact_no_flag(void) {
+    TrafficControlElement tc = drive_test_light();
+    set_light(TRAFFIC_CONTROL_STATE_RED);
+
+    Agent legacy = drive_test_sweep_agent(-0.5f, 10.0f, 0.5f, 10.0f, 0.0f, 4.0f);
+    Drive legacy_env = drive_test_light_env(&tc);
+    legacy_env.agents = &legacy;
+    EXPECT_TRUE(check_red_light_violation(&legacy_env, 0));
+
+    Agent swept = drive_test_sweep_agent(-0.5f, 10.0f, 0.5f, 10.0f, 0.0f, 4.0f);
+    Drive swept_env = drive_test_sweep_env(&tc);
+    swept_env.agents = &swept;
+    EXPECT_TRUE(!check_red_light_violation(&swept_env, 0));
+    return 0;
+}
+
+// Entering-direction gates carry over: an exiting (opposing-heading) body sweeping across the bar
+// stays exempt under the sweep.
+static int test_sweep_exiting_direction_no_flag(void) {
+    TrafficControlElement tc = drive_test_light();
+    Drive env = drive_test_sweep_env(&tc);
+    set_light(TRAFFIC_CONTROL_STATE_RED);
+    Agent agent = drive_test_sweep_agent(1.0f, 0.0f, -1.0f, 0.0f, (float) M_PI, 4.0f);
+    env.agents = &agent;
+    EXPECT_TRUE(!check_red_light_violation(&env, 0));
+    return 0;
+}
+
+// z gate carries over: a body sweeping across on a different level is ignored.
+static int test_sweep_different_z_level_no_flag(void) {
+    TrafficControlElement tc = drive_test_light();
+    Drive env = drive_test_sweep_env(&tc);
+    set_light(TRAFFIC_CONTROL_STATE_RED);
+    Agent agent = drive_test_sweep_agent(-0.5f, 0.0f, 0.5f, 0.0f, 0.0f, 4.0f);
+    agent.sim_z = 6.0f;
+    env.agents = &agent;
+    EXPECT_TRUE(!check_red_light_violation(&env, 0));
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     RUN_TEST(test_red_crossing_flags);
@@ -194,5 +326,12 @@ int main(void) {
     RUN_TEST(test_perpendicular_crossing_no_flag);
     RUN_TEST(test_different_z_level_no_flag);
     RUN_TEST(test_no_lane_assignment_still_flags);
+    RUN_TEST(test_sweep_catches_center_miss_clip);
+    RUN_TEST(test_sweep_stationary_straddle_no_flag);
+    RUN_TEST(test_sweep_straddle_then_proceed_not_reflagged);
+    RUN_TEST(test_sweep_fires_once_on_first_body_contact);
+    RUN_TEST(test_sweep_lateral_pass_without_contact_no_flag);
+    RUN_TEST(test_sweep_exiting_direction_no_flag);
+    RUN_TEST(test_sweep_different_z_level_no_flag);
     return test_summary(failures);
 }

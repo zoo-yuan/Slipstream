@@ -2139,6 +2139,17 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->hazard_walkers_n_hi = (int) unpack(kwargs, "hazard_walkers_n_hi");
     env->hazard_walkers_speed_lo_mps = (float) unpack(kwargs, "hazard_walkers_speed_lo_mps");
     env->hazard_walkers_speed_hi_mps = (float) unpack(kwargs, "hazard_walkers_speed_hi_mps");
+    // K3 enforcement knobs (opt-in; defaults reproduce the legacy episode stream bit-for-bit).
+    env->traffic_light_truth_timing = (int) unpack(kwargs, "traffic_light_truth_timing");
+    env->traffic_light_footprint_sweep = (int) unpack(kwargs, "traffic_light_footprint_sweep");
+    env->stop_sign_dwell_range_lo = (float) unpack(kwargs, "stop_sign_dwell_range_lo");
+    env->stop_sign_dwell_range_hi = (float) unpack(kwargs, "stop_sign_dwell_range_hi");
+    if (!isfinite(env->stop_sign_dwell_range_lo) || !isfinite(env->stop_sign_dwell_range_hi)
+        || env->stop_sign_dwell_range_lo < 0.0f || env->stop_sign_dwell_range_lo > env->stop_sign_dwell_range_hi) {
+        PyErr_SetString(PyExc_ValueError, "stop_sign_dwell_range_lo/hi must satisfy 0 <= lo <= hi (finite)");
+        return -1;
+    }
+    env->pedestrian_traffic_exempt = (int) unpack(kwargs, "pedestrian_traffic_exempt");
     if (env->hazard_enable) {
         // Trust boundary: fail-fast on any malformed external config BEFORE the env runs.
         if (env->simulation_mode != SIMULATION_MODE_GIGAFLOW) {

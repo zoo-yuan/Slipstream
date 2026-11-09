@@ -357,6 +357,23 @@ struct Drive {
     int traffic_lights_enabled;
     int stop_signs_enabled;
     int yield_signs_enabled;
+    // K3 enforcement knobs (opt-in; all-defaults leave the episode stream bit-identical to legacy):
+    // - traffic_light_truth_timing: gigaflow keeps bin-provided states (replay semantics) instead of
+    //   the procedural fill. Inert on geometry-only maps (CARLA: no bin states -> procedural fallback).
+    // - traffic_light_footprint_sweep: red light = full-footprint swept path vs the stop bar
+    //   (TerraZero "swept path crosses the stop bar"); off = legacy centre-point crossing.
+    // - stop_sign_dwell_range_[lo,hi]: per-sign sampled hold-below-speed dwell in seconds; [0,0]
+    //   = legacy single-tick completion. Sampling draws RNG only while hi > 0.
+    // - pedestrian_traffic_exempt: pedestrians skip the red-light/stop-sign/road-exit entries
+    //   (TerraZero per-class rule; cyclists stay enforced as vehicles). Default 1: no active
+    //   PEDESTRIAN exists today (K2 jaywalkers are static slots, metric-free), so this is inert
+    //   until the sim-agent line fields active pedestrians.
+    int traffic_light_truth_timing;
+    int traffic_light_footprint_sweep;
+    float stop_sign_dwell_range_lo;
+    float stop_sign_dwell_range_hi;
+    int pedestrian_traffic_exempt;
+    int truth_timing_fallback_lights; // diagnostics: lights that fell back to the procedural fill in the last pass
     int obs_lane_stride;
     int obs_boundary_stride;
     int obs_stride_merge_segments;
@@ -594,6 +611,7 @@ static void reset_agent_state(Agent *agent) {
     agent->stop_sign_stop_completed = 0;
     agent->stop_sign_last_failed_idx = -1;
     agent->stop_sign_standstill_idx = -1;
+    agent->stop_sign_standstill_dwell_seconds = 0.0f;
     agent->current_lane_idx = -1;
     agent->previous_lane_idx = -1;
     agent->current_route_idx = 0;
@@ -1832,6 +1850,16 @@ static bool check_corner_boxes_overlap(float corners_a[4][2], float corners_b[4]
     return true;
 }
 
+// True when the given segment already overlaps the agent box at its previous pose (bar in the
+// box-local frame). Used as the begin-contact guard of the K3 footprint sweep edge trigger.
+static bool box_overlapped_segment_at_prev_pose(float ax, float ay, float bx, float by, Agent *agent) {
+    float a_prev[2], b_prev[2];
+    float half_length = agent->sim_length / 2.0f, half_width = agent->sim_width / 2.0f;
+    project_point_to_local(ax, ay, agent->prev_x, agent->prev_y, agent->prev_cos_heading, agent->prev_sin_heading, &a_prev[0], &a_prev[1]);
+    project_point_to_local(bx, by, agent->prev_x, agent->prev_y, agent->prev_cos_heading, agent->prev_sin_heading, &b_prev[0], &b_prev[1]);
+    return check_segment_intersects_aabb(a_prev, b_prev, half_length, half_width);
+}
+
 static bool check_red_light_violation(Drive *env, int agent_idx) {
     Agent *agent = &env->agents[agent_idx];
     // Vehicle center crosses on red; the laterally extended line cannot be driven
@@ -1866,6 +1894,22 @@ static bool check_red_light_violation(Drive *env, int agent_idx) {
         float line_dy = tc->stop_line[4] - tc->stop_line[1];
         float line_len = sqrtf(line_dx * line_dx + line_dy * line_dy);
         if (line_len <= 0.0f) {
+            continue;
+        }
+        if (env->traffic_light_footprint_sweep) {
+            // K3 TerraZero semantics: the violation registers when the agent's swept path (full
+            // footprint, prev -> cur pose) crosses onto the stop bar on a red tick. Begin-contact
+            // edge trigger: the bar must not already overlap the box at the previous pose, so a
+            // vehicle waiting astride the bar is not flagged ("not merely for waiting within the
+            // region") and a traversal fires once. The 1.5x bar extension matches the spawn
+            // overlap convention; the footprint itself replaces the legacy 15 m virtual extension.
+            float ext = (STOP_LINE_EXTENSION_FACTOR - 1.0f) * 0.5f;
+            float ext_p1[2] = {tc->stop_line[0] - ext * line_dx, tc->stop_line[1] - ext * line_dy};
+            float ext_p2[2] = {tc->stop_line[3] + ext * line_dx, tc->stop_line[4] + ext * line_dy};
+            if (!box_overlapped_segment_at_prev_pose(ext_p1[0], ext_p1[1], ext_p2[0], ext_p2[1], agent)
+                && check_segment_crosses_moving_box(ext_p1[0], ext_p1[1], ext_p2[0], ext_p2[1], agent)) {
+                return true;
+            }
             continue;
         }
         float line_ux = line_dx / line_len, line_uy = line_dy / line_len;
@@ -2028,6 +2072,7 @@ static bool update_stop_sign_state(Drive *env, int agent_idx) {
     if (agent->stop_sign_standstill_idx >= 0
         && stop_sign_beyond_proximity(env, agent, agent->stop_sign_standstill_idx)) {
         agent->stop_sign_standstill_idx = -1;
+        agent->stop_sign_standstill_dwell_seconds = 0.0f;
     }
     if (agent->stop_sign_target_idx >= 0 && stop_sign_beyond_proximity(env, agent, agent->stop_sign_target_idx)) {
         agent->stop_sign_target_idx = -1;
@@ -2037,12 +2082,22 @@ static bool update_stop_sign_state(Drive *env, int agent_idx) {
     if (agent->stop_sign_target_idx < 0 || !agent->stop_sign_stop_completed) {
         int standstill_idx = find_stop_sign_standstill(env, agent);
         if (standstill_idx >= 0) {
+            // K3 sampled dwell: consecutive hold ticks in the same box accumulate against that sign;
+            // moving to another box restarts the accumulation (one latch per standstill).
+            if (standstill_idx != agent->stop_sign_standstill_idx) {
+                agent->stop_sign_standstill_dwell_seconds = 0.0f;
+            }
             agent->stop_sign_standstill_idx = standstill_idx;
+            agent->stop_sign_standstill_dwell_seconds += env->dt;
         }
         int target_idx = find_stop_sign_target(env, agent);
         if (target_idx >= 0 && target_idx != agent->stop_sign_target_idx) {
             agent->stop_sign_target_idx = target_idx;
-            agent->stop_sign_stop_completed = target_idx == agent->stop_sign_standstill_idx;
+            // standstill memory credit: the remembered stop counts once its accumulated hold time
+            // reaches the target sign's sampled dwell (legacy dwell 0 -> instant, as before).
+            agent->stop_sign_stop_completed = target_idx == agent->stop_sign_standstill_idx
+                && agent->stop_sign_standstill_dwell_seconds
+                    >= env->traffic_elements[target_idx].stop_dwell_seconds;
         }
         if (agent->stop_sign_target_idx < 0) {
             return false;
@@ -2050,7 +2105,9 @@ static bool update_stop_sign_state(Drive *env, int agent_idx) {
     }
     compute_stop_line_frame(&env->traffic_elements[agent->stop_sign_target_idx], &frame);
     if (!agent->stop_sign_stop_completed && agent->sim_speed < STOP_SIGN_STOP_SPEED_MPS
-        && check_agent_in_stop_sign_box(agent, &frame)) {
+        && agent->stop_sign_standstill_idx == agent->stop_sign_target_idx
+        && agent->stop_sign_standstill_dwell_seconds
+            >= env->traffic_elements[agent->stop_sign_target_idx].stop_dwell_seconds) {
         agent->stop_sign_stop_completed = 1;
     }
     if (agent->stop_sign_stop_completed) {
@@ -2861,8 +2918,27 @@ static void sample_zone_speed_limits(Drive *env) {
     }
 }
 
+// K3 sampled dwell: draw each stop sign's hold-below-speed requirement for this episode.
+// Draws RNG only while the range is active (hi > 0); inactive ([0,0] legacy) signs keep 0 =
+// single-tick completion, so the episode stream stays bit-identical to the knob-free env.
+static void sample_stop_sign_dwells(Drive *env) {
+    if (!(env->stop_sign_dwell_range_hi > 0.0f)) {
+        return;
+    }
+    for (int i = 0; i < env->num_traffic_elements; i++) {
+        TrafficControlElement *tc = &env->traffic_elements[i];
+        if (tc->type == TRAFFIC_CONTROL_TYPE_STOP_SIGN) {
+            tc->stop_dwell_seconds = sample_uniform(
+                &env->rng_state, env->stop_sign_dwell_range_lo, env->stop_sign_dwell_range_hi);
+        }
+    }
+}
+
 static void generate_traffic_light_states(Drive *env) {
     int training_mode = !env->eval_mode || env->eval_training_render;
+    // K3 truth-timing: "lights that carried no bin states this pass" diagnostics; reset per pass
+    // so the counter always reflects the most recent fill (0 = every light kept its bin program).
+    env->truth_timing_fallback_lights = 0;
 
     // 20% chance: disable ALL lights for this episode
     int disable_all = training_mode && (sample_uniform(&env->rng_state, 0.0f, 1.0f) < TL_EPISODE_DISABLE_PROB);
@@ -2870,11 +2946,28 @@ static void generate_traffic_light_states(Drive *env) {
     int element_capacity = env->num_traffic_elements > 0 ? env->num_traffic_elements : 1;
     TrafficLightCycle cycles[element_capacity];
     int group_removed[element_capacity];
+    int cycle_sampled[element_capacity]; // K3: leaders preserved by truth-timing skip their draw; fill on demand
+    memset(cycle_sampled, 0, sizeof(cycle_sampled));
     sample_traffic_light_group_removal(env, group_removed, training_mode && !disable_all);
     for (int i = 0; i < env->num_traffic_elements; i++) {
         TrafficControlElement *tc = &env->traffic_elements[i];
         if (tc->type != TRAFFIC_CONTROL_TYPE_TRAFFIC_LIGHT || tc->states == NULL || tc->state_size <= 0) {
             continue;
+        }
+
+        // K3 truth-timing: replay semantics for gigaflow - keep the bin's signal program (repeat the
+        // last bin state past the bin length) instead of the procedural randomized fill. Lights
+        // without bin states (geometry-only maps, e.g. CARLA) fall back to the procedural fill and
+        // are counted in truth_timing_fallback_lights; the knob is a documented no-op there.
+        if (env->traffic_light_truth_timing) {
+            if (tc->bin_states != NULL && tc->bin_state_size > 0) {
+                for (int t = 0; t < tc->state_size; t++) {
+                    int src = t < tc->bin_state_size ? t : tc->bin_state_size - 1;
+                    tc->states[t] = tc->bin_states[src];
+                }
+                continue;
+            }
+            env->truth_timing_fallback_lights++;
         }
 
         int fill_steps = tc->state_size;
@@ -2889,8 +2982,9 @@ static void generate_traffic_light_states(Drive *env) {
         int junction_id = env->traffic_light_junction_phases ? tc->junction_id : -1;
         int own_phase_idx = junction_id < 0 ? 0 : tc->phase_idx;
         int leader_idx = junction_id < 0 ? i : traffic_light_junction_leader(env, i);
-        if (leader_idx == i) {
-            cycles[i] = sample_traffic_light_cycle(env, junction_id, training_mode);
+        if (leader_idx == i || !cycle_sampled[leader_idx]) {
+            cycles[leader_idx] = sample_traffic_light_cycle(env, junction_id, training_mode);
+            cycle_sampled[leader_idx] = 1;
         }
 
         if (training_mode) {
@@ -3749,6 +3843,7 @@ void init(Drive *env) {
         = (float *) malloc((env->num_speed_zones > 0 ? env->num_speed_zones : 1) * sizeof(float));
     begin_episode_rng(env);
     sample_zone_speed_limits(env);
+    sample_stop_sign_dwells(env);
     if (env->simulation_mode == SIMULATION_MODE_GIGAFLOW) {
         int steps
             = env->scenario_length + 1; // the terminal step's obs and red-light check read states[scenario_length]
@@ -5252,6 +5347,14 @@ static void gather_road_observation_rows(
 // Core Simulation Functions
 // ========================================
 
+// TerraZero per-class rule: pedestrians are exempt from the intersection right-of-way infractions
+// (red light / stop sign / road exit); collisions still apply and cyclists stay enforced as vehicles.
+// Inert today: gigaflow spawns VEHICLE-typed actives only and the K2 jaywalkers live in static slots
+// that never reach compute_metrics; this gate paves the way for sim-agent active pedestrians.
+static bool pedestrian_exempt_from_road_infractions(const Drive *env, const Agent *agent) {
+    return env->pedestrian_traffic_exempt && agent->type == PEDESTRIAN;
+}
+
 static void compute_metrics(Drive *env, int agent_idx, int log_idx) {
     Agent *agent = &env->agents[agent_idx];
     Log *agent_log = &env->logs[log_idx];
@@ -5261,10 +5364,13 @@ static void compute_metrics(Drive *env, int agent_idx, int log_idx) {
     if (agent->sim_x == INVALID_POSITION) {
         return; // invalid agent position
     }
+    bool ped_exempt = pedestrian_exempt_from_road_infractions(env, agent);
     if (get_grid_index(env, agent->sim_x, agent->sim_y) == -1) {
         // Current agent is offgrid, treat as offroad
-        agent->metrics_array[OFFROAD_IDX] = 1.0f;
-        apply_infraction_behavior(agent, env->offroad_behavior);
+        if (!ped_exempt) {
+            agent->metrics_array[OFFROAD_IDX] = 1.0f;
+            apply_infraction_behavior(agent, env->offroad_behavior);
+        }
         return;
     }
 
@@ -5357,7 +5463,7 @@ static void compute_metrics(Drive *env, int agent_idx, int log_idx) {
     // Order matters: offroad > collision > red_light > stop_sign.
 
     // Priority 1: Handle offroad
-    if (is_offroad) {
+    if (is_offroad && !ped_exempt) {
         agent->metrics_array[OFFROAD_IDX] = 1.0f;
         apply_infraction_behavior(agent, env->offroad_behavior);
         return;
@@ -5379,15 +5485,15 @@ static void compute_metrics(Drive *env, int agent_idx, int log_idx) {
     }
 
     // Priority 3: Handle red light violation
-    if (env->traffic_lights_enabled && env->obs_slots_traffic_controls_n && !env->disable_red_light_infractions
-        && check_red_light_violation(env, agent_idx)) {
+    if (!ped_exempt && env->traffic_lights_enabled && env->obs_slots_traffic_controls_n
+        && !env->disable_red_light_infractions && check_red_light_violation(env, agent_idx)) {
         agent->metrics_array[RED_LIGHT_IDX] = 1.0f;
         apply_infraction_behavior(agent, env->traffic_light_behavior);
         return;
     }
 
     // Priority 4: Handle stop sign violation; the state update runs even when disabled so the sign obs stay identical
-    if (env->stop_signs_enabled && env->obs_slots_traffic_controls_n && update_stop_sign_state(env, agent_idx)
+    if (!ped_exempt && env->stop_signs_enabled && env->obs_slots_traffic_controls_n && update_stop_sign_state(env, agent_idx)
         && !env->disable_stop_sign_infractions) {
         agent->metrics_array[STOP_SIGN_IDX] = 1.0f;
         apply_infraction_behavior(agent, env->stop_sign_behavior);
@@ -6408,6 +6514,7 @@ void c_reset(Drive *env) {
 
     begin_episode_rng(env);
     sample_zone_speed_limits(env);
+    sample_stop_sign_dwells(env);
     if (env->simulation_mode == SIMULATION_MODE_GIGAFLOW) {
         generate_traffic_light_states(env);
         // stale poses must neither block nor escape the spawn overlap check

@@ -1025,6 +1025,15 @@ int load_map_binary(const char *filename, Drive *drive) {
             fclose(file);
             return -1;
         }
+        // K3 truth-timing: keep a pristine copy of the bin's signal program before the gigaflow
+        // init/resize clobbers tc->states; only paid when the truth-timing knob is on.
+        if (drive->traffic_light_truth_timing && state_len > 0) {
+            tc->bin_states = (int *) malloc(state_len * sizeof(int));
+            if (tc->bin_states != NULL) {
+                memcpy(tc->bin_states, tc->states, state_len * sizeof(int));
+                tc->bin_state_size = state_len;
+            }
+        }
 
         if (fread(&tc->num_controlled_lanes, sizeof(int), 1, file) != 1) {
             fclose(file);

@@ -342,6 +342,189 @@ static int test_obb_collision_unchanged_by_shared_sat(void) {
     return 0;
 }
 
+// --- K3 sampled dwell: per-sign hold-below-speed requirement ---
+
+static Drive drive_test_dwell_env(TrafficControlElement *tc, Agent *agent, float dwell_seconds) {
+    Drive env = drive_test_stop_env(tc, agent);
+    env.dt = 0.1f;
+    tc->stop_dwell_seconds = dwell_seconds;
+    return env;
+}
+
+// dwell 0 (legacy default): the first below-speed tick inside the box completes the stop.
+static int test_dwell_zero_completes_on_first_standstill_tick(void) {
+    TrafficControlElement tc = drive_test_stop_sign();
+    Agent agent = drive_test_stop_agent(-12.0f, 0.0f, 0.0f);
+    Drive env = drive_test_dwell_env(&tc, &agent, 0.0f);
+    drive_test_step_to(&agent, -2.5f, 0.0f, 0.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    EXPECT_EQ_INT(agent.stop_sign_stop_completed, 1);
+    EXPECT_NEAR(agent.stop_sign_standstill_dwell_seconds, 0.1f, 1e-6f);
+    return 0;
+}
+
+// dwell 0.4 s: the hold must accumulate four qualifying ticks before completion; crossing early
+// still runs the sign.
+static int test_dwell_hold_duration_required(void) {
+    TrafficControlElement tc = drive_test_stop_sign();
+    Agent agent = drive_test_stop_agent(-12.0f, 0.0f, 0.0f);
+    Drive env = drive_test_dwell_env(&tc, &agent, 0.4f);
+    drive_test_step_to(&agent, -10.0f, 0.0f, 10.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    for (int tick = 1; tick <= 3; tick++) {
+        drive_test_step_to(&agent, -2.5f, 0.0f, 0.0f);
+        EXPECT_FALSE(update_stop_sign_state(&env, 0));
+        EXPECT_EQ_INT(agent.stop_sign_stop_completed, 0);
+    }
+    drive_test_step_to(&agent, -2.5f, 0.0f, 0.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    EXPECT_EQ_INT(agent.stop_sign_stop_completed, 1);
+    EXPECT_NEAR(agent.stop_sign_standstill_dwell_seconds, 0.4f, 1e-5f);
+    // completed stop -> crossing is clean
+    drive_test_step_to(&agent, 0.5f, 0.0f, 3.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    EXPECT_EQ_INT(agent.stop_sign_last_failed_idx, -1);
+    return 0;
+}
+
+// A partial hold survives a short excursion (latch persists within the 20 m proximity) and
+// resumes accumulation on return.
+static int test_dwell_partial_hold_persists_within_proximity(void) {
+    TrafficControlElement tc = drive_test_stop_sign();
+    Agent agent = drive_test_stop_agent(-12.0f, 0.0f, 0.0f);
+    Drive env = drive_test_dwell_env(&tc, &agent, 0.4f);
+    // two hold ticks (0.2 s accumulated)
+    drive_test_step_to(&agent, -2.5f, 0.0f, 0.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    drive_test_step_to(&agent, -2.5f, 0.0f, 0.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    // creep backward out of the box (above stop speed, still within the 20 m proximity; a forward
+    // creep would run the uncompleted sign, which is a different, already-covered violation)
+    drive_test_step_to(&agent, -6.0f, 0.0f, -5.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    EXPECT_EQ_INT(agent.stop_sign_standstill_idx, 0);
+    EXPECT_NEAR(agent.stop_sign_standstill_dwell_seconds, 0.2f, 1e-5f);
+    // return and hold two more ticks -> 0.4 s -> completed
+    drive_test_step_to(&agent, -2.5f, 0.0f, 0.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    EXPECT_EQ_INT(agent.stop_sign_stop_completed, 0);
+    drive_test_step_to(&agent, -2.5f, 0.0f, 0.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    EXPECT_EQ_INT(agent.stop_sign_stop_completed, 1);
+    return 0;
+}
+
+// The hold latch is keyed to one box at a time: shifting into another sign's box restarts the
+// accumulation, so time held at sign A never credits sign B.
+static int test_dwell_restarts_on_other_sign_box(void) {
+    static int lanes_a[1] = {100};
+    static int lanes_b[1] = {101};
+    TrafficControlElement signs[2];
+    signs[0] = drive_test_stop_sign();  // sign A: line y in [-2, 2] at x = 0 (own lane)
+    signs[1] = drive_test_stop_sign();  // sign B: parallel lane, line y in [1.5, 5.5]
+    signs[0].controlled_lanes = lanes_a;
+    signs[1].controlled_lanes = lanes_b;
+    signs[1].stop_line[1] = 1.5f;
+    signs[1].stop_line[4] = 5.5f;
+    signs[0].stop_dwell_seconds = 0.4f;
+    signs[1].stop_dwell_seconds = 0.4f;
+    Agent agent = drive_test_stop_agent(-12.0f, 0.0f, 0.0f);
+    Drive env = drive_test_stop_env(signs, &agent);
+    // The fixture defaults to one element; sign B must be visible to the standstill/target scans
+    // for the latch to move from A to B (kernel scans all num_traffic_elements).
+    env.num_traffic_elements = 2;
+    env.dt = 0.1f;
+    // hold two ticks in sign A's box (0.2 s accumulated against the A latch)
+    drive_test_step_to(&agent, -2.5f, 0.0f, 0.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    EXPECT_EQ_INT(agent.stop_sign_standstill_idx, 0);
+    drive_test_step_to(&agent, -2.5f, 0.0f, 0.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    EXPECT_NEAR(agent.stop_sign_standstill_dwell_seconds, 0.2f, 1e-5f);
+    // shift laterally into sign B's box: the latch moves and the accumulation restarts, so the
+    // A hold must not complete B; B is the new target (A is now 3.5 m off-axis) needing 0.4 s
+    drive_test_step_to(&agent, -2.5f, 3.5f, 0.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    EXPECT_EQ_INT(agent.stop_sign_standstill_idx, 1);
+    EXPECT_EQ_INT(agent.stop_sign_target_idx, 1);
+    EXPECT_EQ_INT(agent.stop_sign_stop_completed, 0);
+    EXPECT_NEAR(agent.stop_sign_standstill_dwell_seconds, 0.1f, 1e-5f);
+    for (int tick = 0; tick < 3; tick++) {
+        drive_test_step_to(&agent, -2.5f, 3.5f, 0.0f);
+        EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    }
+    EXPECT_EQ_INT(agent.stop_sign_stop_completed, 1);
+    return 0;
+}
+
+// Standstill memory credit becomes dwell-aware: a pre-acquisition hold shorter than the sign's
+// dwell acquires the target without completing; the hold then finishes under the target.
+static int test_dwell_standstill_memory_credit_needs_full_hold(void) {
+    TrafficControlElement tc = drive_test_stop_sign();
+    Agent agent = drive_test_stop_agent(-0.7f, 0.0f, 2.0f); // misaligned: no target while holding
+    Drive env = drive_test_dwell_env(&tc, &agent, 0.4f);
+    drive_test_step_to(&agent, -0.7f, 0.0f, 0.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    EXPECT_EQ_INT(agent.stop_sign_standstill_idx, 0);
+    drive_test_step_to(&agent, -0.7f, 0.0f, 0.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    EXPECT_NEAR(agent.stop_sign_standstill_dwell_seconds, 0.2f, 1e-5f);
+    drive_test_turn_to(&agent, 0.0f);
+    drive_test_step_to(&agent, -0.3f, 0.0f, 1.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    EXPECT_EQ_INT(agent.stop_sign_target_idx, 0);
+    EXPECT_EQ_INT(agent.stop_sign_stop_completed, 0); // 0.2 s < 0.4 s: no instant credit
+    drive_test_step_to(&agent, -0.3f, 0.0f, 0.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    drive_test_step_to(&agent, -0.3f, 0.0f, 0.0f);
+    EXPECT_FALSE(update_stop_sign_state(&env, 0));
+    EXPECT_EQ_INT(agent.stop_sign_stop_completed, 1);
+    return 0;
+}
+
+// Reset-side sampling: active range draws a per-sign value inside [lo, hi] deterministically;
+// the legacy range [0,0] draws nothing (RNG stream untouched, dwells stay 0).
+static int test_dwell_sampling_range_and_rng_gate(void) {
+    static int sign_lanes[3] = {100, 101, 102};
+    TrafficControlElement signs[3];
+    for (int i = 0; i < 3; i++) {
+        signs[i] = drive_test_stop_sign();
+        signs[i].controlled_lanes = &sign_lanes[i];
+    }
+    Drive env = {0};
+    env.num_traffic_elements = 3;
+    env.traffic_elements = signs;
+    env.dt = 0.1f;
+
+    rng_seed(&env.rng_state, 11);
+    Rng before = env.rng_state;
+    sample_stop_sign_dwells(&env); // legacy [0,0]: no draws
+    EXPECT_EQ_INT(memcmp(&env.rng_state, &before, sizeof(Rng)), 0);
+    for (int i = 0; i < 3; i++) {
+        EXPECT_NEAR(signs[i].stop_dwell_seconds, 0.0f, 0.0f);
+    }
+
+    env.stop_sign_dwell_range_lo = 0.2f;
+    env.stop_sign_dwell_range_hi = 0.6f;
+    rng_seed(&env.rng_state, 11);
+    sample_stop_sign_dwells(&env);
+    Rng after_draw = env.rng_state;
+    float drawn[3];
+    for (int i = 0; i < 3; i++) {
+        EXPECT_TRUE(signs[i].stop_dwell_seconds >= 0.2f && signs[i].stop_dwell_seconds <= 0.6f);
+        drawn[i] = signs[i].stop_dwell_seconds;
+    }
+    EXPECT_EQ_INT(memcmp(&env.rng_state, &before, sizeof(Rng)) != 0, 1);
+    // deterministic under the same seed, and the three signs are drawn from one stream
+    rng_seed(&env.rng_state, 11);
+    sample_stop_sign_dwells(&env);
+    for (int i = 0; i < 3; i++) {
+        EXPECT_NEAR(signs[i].stop_dwell_seconds, drawn[i], 0.0f);
+    }
+    EXPECT_EQ_INT(memcmp(&env.rng_state, &after_draw, sizeof(Rng)), 0);
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     RUN_TEST(test_approach_acquires_target);
@@ -364,5 +547,11 @@ int main(void) {
     RUN_TEST(test_standstill_clears_beyond_proximity);
     RUN_TEST(test_traffic_light_ignored);
     RUN_TEST(test_obb_collision_unchanged_by_shared_sat);
+    RUN_TEST(test_dwell_zero_completes_on_first_standstill_tick);
+    RUN_TEST(test_dwell_hold_duration_required);
+    RUN_TEST(test_dwell_partial_hold_persists_within_proximity);
+    RUN_TEST(test_dwell_restarts_on_other_sign_box);
+    RUN_TEST(test_dwell_standstill_memory_credit_needs_full_hold);
+    RUN_TEST(test_dwell_sampling_range_and_rng_gate);
     return test_summary(failures);
 }

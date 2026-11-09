@@ -121,6 +121,9 @@ struct Agent {
     int stop_sign_stop_completed;    // 0/1 -> stood still inside the target's trigger box
     int stop_sign_last_failed_idx;   // element run without stopping, not re-targeted until 20 m away
     int stop_sign_standstill_idx;    // element whose trigger box the agent last stood still in, -1 if none
+    // K3 sampled dwell: hold time accumulated in the latched sign's trigger box while below
+    // STOP_SIGN_STOP_SPEED_MPS; completion requires it to reach the sign's stop_dwell_seconds.
+    float stop_sign_standstill_dwell_seconds;
 
     // Jerk dynamics
     float accel_long;
@@ -179,8 +182,16 @@ struct TrafficControlElement {
 
     int state_size;
     int *states;
+    // K3 truth-timing: pristine bin-provided states (replay semantics), kept so the gigaflow
+    // procedural fill can be skipped without losing the original program across resizes.
+    // NULL/0 for geometry-only maps (e.g. CARLA) -> traffic_light_truth_timing has no effect.
+    int bin_state_size;
+    int *bin_states;
     float stop_line[6]; // Two 3D endpoints: [x1,y1,z1, x2,y2,z2]
     float heading;
+    // K3 sampled dwell: hold-below-speed time this sign requires (TerraZero "sampled dwell").
+    // Sampled per episode at reset from stop_sign_dwell_range; 0 = legacy single-tick completion.
+    float stop_dwell_seconds;
     int num_controlled_lanes;
     int *controlled_lanes;
     int junction_id; // -1: light is not part of a junction signal cycle
@@ -222,6 +233,7 @@ void free_road_element(struct RoadMapElement *element) {
 
 void free_traffic_element(struct TrafficControlElement *element) {
     free(element->states);
+    free(element->bin_states);
     free(element->controlled_lanes);
 }
 

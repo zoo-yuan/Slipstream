@@ -184,6 +184,16 @@ class Drive(pufferlib.PufferEnv):
         hazard_walkers_n_hi=2,
         hazard_walkers_speed_lo_mps=1.2,
         hazard_walkers_speed_hi_mps=1.6,
+        # K3 enforcement knobs (opt-in; all-defaults reproduce the legacy episode stream bit-for-bit):
+        # truth timing keeps bin-provided signal programs in gigaflow (inert on geometry-only CARLA
+        # bins: no states -> documented procedural fallback); footprint sweep upgrades the red-light
+        # centre-point crossing to the TerraZero swept-path rule; the dwell range samples per-sign
+        # hold-below-speed times ([0,0] = legacy single-tick completion; RNG only draws while hi > 0);
+        # pedestrians skip the road-exit/red-light/stop-sign entries (cyclists stay enforced as vehicles).
+        traffic_light_truth_timing=False,
+        traffic_light_footprint_sweep=False,
+        stop_sign_dwell_range=(0.0, 0.0),
+        pedestrian_traffic_exempt=True,
     ):
         self.dt = dt
         self.base_max_speed_mps = float(base_max_speed_mps)
@@ -349,6 +359,16 @@ class Drive(pufferlib.PufferEnv):
         self.hazard_walkers_n_hi = int(hazard_walkers_n_hi)
         self.hazard_walkers_speed_lo_mps = float(hazard_walkers_speed_lo_mps)
         self.hazard_walkers_speed_hi_mps = float(hazard_walkers_speed_hi_mps)
+        # K3 enforcement knobs: fail-fast validation BEFORE env init (kernel trust boundary).
+        self.traffic_light_truth_timing = bool(traffic_light_truth_timing)
+        self.traffic_light_footprint_sweep = bool(traffic_light_footprint_sweep)
+        self.stop_sign_dwell_range = (float(stop_sign_dwell_range[0]), float(stop_sign_dwell_range[1]))
+        if any(not np.isfinite(v) for v in self.stop_sign_dwell_range) or self.stop_sign_dwell_range[0] < 0.0 \
+                or self.stop_sign_dwell_range[0] > self.stop_sign_dwell_range[1]:
+            raise ValueError(
+                f"stop_sign_dwell_range must satisfy 0 <= lo <= hi (finite), got {self.stop_sign_dwell_range}"
+            )
+        self.pedestrian_traffic_exempt = bool(pedestrian_traffic_exempt)
         if self.hazard_enable:
             if simulation_mode != "gigaflow":
                 raise ValueError("hazard_enable requires simulation_mode='gigaflow'")
@@ -757,6 +777,11 @@ class Drive(pufferlib.PufferEnv):
             "hazard_walkers_n_hi": self.hazard_walkers_n_hi,
             "hazard_walkers_speed_lo_mps": self.hazard_walkers_speed_lo_mps,
             "hazard_walkers_speed_hi_mps": self.hazard_walkers_speed_hi_mps,
+            "traffic_light_truth_timing": int(self.traffic_light_truth_timing),
+            "traffic_light_footprint_sweep": int(self.traffic_light_footprint_sweep),
+            "stop_sign_dwell_range_lo": self.stop_sign_dwell_range[0],
+            "stop_sign_dwell_range_hi": self.stop_sign_dwell_range[1],
+            "pedestrian_traffic_exempt": int(self.pedestrian_traffic_exempt),
             "init_step": self._sample_init_step(),
             "init_step_min_horizon": self.init_step_min_horizon,
             "stagger_first_episode": self.stagger_first_episode,

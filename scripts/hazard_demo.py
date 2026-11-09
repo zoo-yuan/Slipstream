@@ -199,7 +199,8 @@ def kernel_provenance() -> dict:
     }
 
 
-def build_env(args, map_bin: Path, cosim_partner_slots: int = 0, hazard_cfg=None):
+def build_env(args, map_bin: Path, cosim_partner_slots: int = 0, hazard_cfg=None,
+              extra_env_kwargs=None):
     """Gigaflow env with all agents on IDM; knobs mirror pufferlib/config/puffer_drive.yaml.
 
     cosim_partner_slots > 0 appends CONTROLLER_STATIC vehicle slots after the
@@ -208,6 +209,9 @@ def build_env(args, map_bin: Path, cosim_partner_slots: int = 0, hazard_cfg=None
     dynamic spawn stream for a given seed is identical to the baseline run.
     hazard_cfg (validated config/hazard_demo.yaml dict) maps onto the K1
     hazard_* env kwargs: placement then happens INSIDE the C reset path.
+    extra_env_kwargs (optional dict) merges last, overriding defaults — the
+    K3 evidence runner passes the enforcement knob face through this hook
+    without changing any demo default.
     """
     from pufferlib.ocean.drive.drive import Drive
 
@@ -291,6 +295,7 @@ def build_env(args, map_bin: Path, cosim_partner_slots: int = 0, hazard_cfg=None
         cosim_partner_slots=cosim_partner_slots,
         seed=args.seed,
         **hazard_kwargs,
+        **(extra_env_kwargs or {}),
     )
 
 

@@ -195,6 +195,97 @@ static int test_schedule_covers_terminal_observation(void) {
     return 0;
 }
 
+// --- K3 truth-timing knob: bin-provided states (replay semantics) vs the procedural fill ---
+
+#define TRUTH_BIN_STATES 40
+static int truth_bins[LIGHT_COUNT][STATE_COUNT];
+
+static void truth_fill_bin(int *bin, int size, int phase) {
+    for (int t = 0; t < size; t++) {
+        bin[t] = ((t / 10 + phase) % 2) ? TRAFFIC_CONTROL_STATE_GREEN : TRAFFIC_CONTROL_STATE_RED;
+    }
+}
+
+static Drive truth_test_env(TrafficControlElement *lights, int truth_on) {
+    Drive env = drive_test_lights_env(lights, 1);
+    env.traffic_light_truth_timing = truth_on;
+    for (int i = 0; i < LIGHT_COUNT; i++) {
+        truth_fill_bin(truth_bins[i], i == 0 ? TRUTH_BIN_STATES : STATE_COUNT, i);
+        lights[i].bin_states = truth_bins[i];
+        lights[i].bin_state_size = i == 0 ? TRUTH_BIN_STATES : STATE_COUNT;
+    }
+    return env;
+}
+
+// Knob on: every light keeps its bin program; the short bin repeats its last state past the bin
+// length, and no light is counted as a procedural fallback.
+static int test_truth_timing_preserves_bin_states(void) {
+    TrafficControlElement lights[LIGHT_COUNT];
+    Drive env = truth_test_env(lights, 1);
+    generate_traffic_light_states(&env);
+    EXPECT_EQ_INT(env.truth_timing_fallback_lights, 0);
+    for (int i = 0; i < LIGHT_COUNT; i++) {
+        int bin_size = lights[i].bin_state_size;
+        for (int t = 0; t < STATE_COUNT; t++) {
+            int src = t < bin_size ? t : bin_size - 1;
+            EXPECT_EQ_INT(lights[i].states[t], truth_bins[i][src]);
+        }
+    }
+    return 0;
+}
+
+// Knob off (legacy): bin copies are ignored and the procedural fill overwrites the programs.
+static int test_truth_timing_off_overwrites_bin_states(void) {
+    TrafficControlElement lights[LIGHT_COUNT];
+    Drive env = truth_test_env(lights, 0);
+    generate_traffic_light_states(&env);
+    int differing = 0;
+    for (int i = 0; i < LIGHT_COUNT; i++) {
+        for (int t = 0; t < STATE_COUNT; t++) {
+            differing += lights[i].states[t] != truth_bins[i][t % lights[i].bin_state_size];
+        }
+    }
+    EXPECT_TRUE(differing > 0);
+    return 0;
+}
+
+// Attaching a pristine bin copy alone must not disturb the legacy knob-off stream: same seed,
+// bin-free lights and bin-carrying lights fill identically.
+static int test_truth_timing_off_matches_bin_free_env(void) {
+    TrafficControlElement with_bins[LIGHT_COUNT];
+    TrafficControlElement without_bins[LIGHT_COUNT];
+    Drive a = truth_test_env(with_bins, 0);
+    Drive b = drive_test_lights_env(without_bins, 1);
+    generate_traffic_light_states(&a);
+    generate_traffic_light_states(&b);
+    EXPECT_EQ_INT(a.truth_timing_fallback_lights, 0);
+    EXPECT_EQ_INT(b.truth_timing_fallback_lights, 0);
+    for (int i = 0; i < LIGHT_COUNT; i++) {
+        EXPECT_TRUE(memcmp(with_bins[i].states, without_bins[i].states, STATE_COUNT * sizeof(int)) == 0);
+    }
+    return 0;
+}
+
+// Knob on with a geometry-only light (CARLA-style: no bin states) falls back to the procedural
+// fill for that light and records it in truth_timing_fallback_lights; bin-carrying junction
+// lights stay preserved.
+static int test_truth_timing_fallback_counts_geometry_only_light(void) {
+    TrafficControlElement lights[LIGHT_COUNT];
+    Drive env = truth_test_env(lights, 1);
+    lights[3].bin_states = NULL;
+    lights[3].bin_state_size = 0;
+    generate_traffic_light_states(&env);
+    EXPECT_EQ_INT(env.truth_timing_fallback_lights, 1);
+    for (int t = 0; t < STATE_COUNT; t++) {
+        EXPECT_EQ_INT(lights[3].states[t] >= TRAFFIC_CONTROL_STATE_RED
+                          && lights[3].states[t] <= TRAFFIC_CONTROL_STATE_OFF,
+                      1);
+        int src = t < TRUTH_BIN_STATES ? t : TRUTH_BIN_STATES - 1;
+        EXPECT_EQ_INT(lights[0].states[t], truth_bins[0][src]);
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     RUN_TEST(test_junction_lights_never_green_together);
@@ -205,5 +296,9 @@ int main(void) {
     RUN_TEST(test_training_group_removal_turns_off_whole_junction);
     RUN_TEST(test_eval_never_removes_lights);
     RUN_TEST(test_schedule_covers_terminal_observation);
+    RUN_TEST(test_truth_timing_preserves_bin_states);
+    RUN_TEST(test_truth_timing_off_overwrites_bin_states);
+    RUN_TEST(test_truth_timing_off_matches_bin_free_env);
+    RUN_TEST(test_truth_timing_fallback_counts_geometry_only_light);
     return test_summary(failures);
 }

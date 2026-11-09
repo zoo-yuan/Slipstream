@@ -299,6 +299,9 @@ class DriveEnvConfig:
     hazard_walkers_n_hi: int = _constrained_field(NONNEGATIVE_INT_CONSTRAINT)
     hazard_walkers_speed_lo_mps: float = _constrained_field(POSITIVE_NUMBER_CONSTRAINT)
     hazard_walkers_speed_hi_mps: float = _constrained_field(POSITIVE_NUMBER_CONSTRAINT)
+    # Static-slot budget the hazard placement draws from; the kernel fail-fasts at env
+    # construction when hazard_enable is set and this is below the planned-count capacity.
+    cosim_partner_slots: int = _constrained_field(NONNEGATIVE_INT_CONSTRAINT)
     traffic_light_truth_timing: bool = MISSING
     traffic_light_footprint_sweep: bool = MISSING
     stop_sign_dwell_range: list[float] = MISSING

@@ -123,6 +123,12 @@ env:
   hazard_walkers_n_hi: 2
   hazard_walkers_speed_lo_mps: 1.2
   hazard_walkers_speed_hi_mps: 1.6
+  # Static co-sim partner slots appended after the controlled-agent budget (owned by the
+  # external sim / hazard subsystem, never spawned or stepped as policy agents). K1/K2
+  # hazard placement lives in these slots: hazard_enable requires this >= the hazard slot
+  # capacity (planned-count highs; see Drive.hazard_slot_capacity -- with the defaults
+  # above that is 10 parked + 2*2 cluster + 2*14 cones + 2 walkers = 44). 0 disables.
+  cosim_partner_slots: 0
   # --- Right-of-way enforcement knobs (K3 patches, K4a TerraZero defaults) ---
   # Red-light violation = full-body swept path crossing the stop bar (TerraZero semantics);
   # false = legacy centre-point crossing (pre-K4a escape hatch).

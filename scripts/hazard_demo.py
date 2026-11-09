@@ -361,17 +361,31 @@ def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements
                      center, window_m, size_px, dt, seed, map_name,
                      mode_label="baseline", static_indices=None, static_class_of=None,
                      min_cone_px=CONE_MIN_DIAM_PX, walker_indices=None, walker_trails=None,
-                     walker_min_px=None):
+                     walker_min_px=None, walker_done_steps=None):
     """Top-down frame; the single renderer for full-map keyframes and GIFs.
 
     Class-based coloring (owner acceptance 2026-11-05 R2): SDC red, vehicles
     blue, latched gray, static slots tinted by ``static_class_of``. Cones draw
     as a diamond marker with diagonal max(min_cone_px, true size); pass
-    min_cone_px=0 for true-scale zoom renders. Walkers (M2 jaywalker, kernel
-    type still 1) draw as magenta dots with a forced minimum diameter on full
-    maps (walker_min_px=None -> WALKER_MIN_DIAM_PX; 0 -> true scale in zooms)
-    plus their trajectory polyline up to ``step``. No in-frame legend box: the
-    HUD ends with a "legend: see legend.png" pointer to the standalone image."""
+    min_cone_px=0 for true-scale zoom renders. Walkers (M2 jaywalker / K2
+    kernel-jaywalker) draw as magenta dots with a forced minimum diameter on
+    full maps (walker_min_px=None -> WALKER_MIN_DIAM_PX; 0 -> true scale in
+    zooms) plus their trajectory polyline up to ``step``.
+
+    K2 hotfix (owner visual acceptance: a vehicle appeared to drive over a
+    walker in seed43): the top-down projection collapses road layers, so the
+    renderer discloses vertical separation instead of implying contact — any
+    live car-walker pair with center distance < WALKER_Z_PAIR_DIST_M and
+    |dz| >= WALKER_Z_ANNOTATE_M (TerraZero Z-separation 2.5 m; agent heights
+    are 1.5 m, so such a pair can never touch) draws an enclosing annotation
+    box "Δz≈±N.Nm (separate level)". Despawned walkers (K2 kernel completes
+    the crossing and invalidates the row, so sim_valid reads 0 in the frame
+    data) no longer draw an entity: they draw a faded trail-endpoint marker
+    plus a "cleared @stepN" tag from ``walker_done_steps``. Kernel probe
+    (seed43, walker row 150): dz = 9.9 m overpass traffic — the z-gate in
+    collision_check correctly rejected every pair, so this is annotation, not
+    a missed latch. No in-frame legend box: the HUD ends with a "legend: see
+    legend.png" pointer to the standalone image."""
     scale = size_px / window_m
     img = Image.new("RGB", (size_px, size_px), GIF_COLORS["background"])
     draw = ImageDraw.Draw(img)
@@ -422,8 +436,24 @@ def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements
     static_set = set(int(i) for i in (static_indices or ()))
     walker_set = set(int(i) for i in (walker_indices or ()))
     min_walker_px = WALKER_MIN_DIAM_PX if walker_min_px is None else float(walker_min_px)
+    # K2 hotfix: z-separation pair scan (TerraZero Z-separation 2.5 m). Only LIVE
+    # walker rows participate — despawned rows (sim_valid=0) left the sim and their
+    # position reads INVALID_POSITION.
+    walker_z_pairs = []
+    for wr in walker_set:
+        if not (0 <= wr < len(agent_i32)) or int(agent_i32[wr, 2]) != 1:
+            continue
+        wx, wy, wz = (float(agent_f32[wr, 0]), float(agent_f32[wr, 1]), float(agent_f32[wr, 2]))
+        for vr in np.flatnonzero(active):
+            if vr in walker_set or int(agent_i32[vr, 1]) != AGENT_TYPE_VEHICLE:
+                continue
+            d = float(np.hypot(float(agent_f32[vr, 0]) - wx, float(agent_f32[vr, 1]) - wy))
+            vz = float(agent_f32[vr, 2])
+            if d < WALKER_Z_PAIR_DIST_M and abs(wz - vz) >= WALKER_Z_ANNOTATE_M:
+                walker_z_pairs.append((wr, int(vr), wz - vz))
     for i in np.flatnonzero(active):
         x, y = float(agent_f32[i, 0]), float(agent_f32[i, 1])
+        z = float(agent_f32[i, 2])
         heading = float(agent_f32[i, 3])
         length = max(float(agent_f32[i, 4]), 0.5)
         width = max(float(agent_f32[i, 5]), 0.5)
@@ -432,8 +462,11 @@ def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements
         is_sdc = i == sdc_row
         cx, cy = _world_to_px(x, y, center, scale, size_px)
         if i in walker_set:
-            # python-stepped jaywalker (0.5 m slot, kernel type 1): magenta dot,
-            # forced minimum diameter on full maps (sub-meter marker rule)
+            # jaywalker walker (0.5 m slot; kernel type 2 PEDESTRIAN, M2 python
+            # type 1): enlarged magenta marker (sub-meter visibility rule).
+            # Despawned walkers (K2 kernel completion -> invalidated row) never
+            # reach this branch (sim_valid=0 drops them from ``active``); they
+            # draw as a faded trail-endpoint marker below.
             r = max(min_walker_px / 2.0, 0.25 * scale)
             draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=GIF_COLORS["walker"],
                          outline=(0, 0, 0))
@@ -474,6 +507,47 @@ def render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements
         # heading tick
         tipx, tipy = _world_to_px(x + 0.6 * length * cos_h, y + 0.6 * length * sin_h, center, scale, size_px)
         draw.line([poly[0], (tipx, tipy)], fill="#222222", width=1)
+
+    # K2 hotfix: z-separation annotation boxes, drawn above the entities so the
+    # pair stays readable through the stroke. Box encloses walker + vehicle
+    # (vehicle true-scale corners); label = signed walker-minus-vehicle dz.
+    for wr, vr, dz in walker_z_pairs:
+        vx_, vy_ = float(agent_f32[vr, 0]), float(agent_f32[vr, 1])
+        vh = float(agent_f32[vr, 3])
+        vl = max(float(agent_f32[vr, 4]), 0.5)
+        vw = max(float(agent_f32[vr, 5]), 0.5)
+        ch, sh = np.cos(vh), np.sin(vh)
+        pts = [_world_to_px(float(agent_f32[wr, 0]), float(agent_f32[wr, 1]), center, scale, size_px)]
+        for lx, ly in ((vl / 2, vw / 2), (vl / 2, -vw / 2), (-vl / 2, -vw / 2), (-vl / 2, vw / 2)):
+            pts.append(_world_to_px(vx_ + lx * ch - ly * sh, vy_ + lx * sh + ly * ch,
+                                    center, scale, size_px))
+        pxs = [p[0] for p in pts]
+        pys = [p[1] for p in pts]
+        margin = 8
+        bx0, by0 = min(pxs) - margin, min(pys) - margin
+        bx1, by1 = max(pxs) + margin, max(pys) + margin
+        draw.rectangle([bx0, by0, bx1, by1], outline=WALKER_Z_RGB, width=2)
+        draw.text((max(4, int(bx0)), max(4, int(by0) - 14)),
+                  f"Δz≈{dz:+.1f}m (separate level)", fill=WALKER_Z_RGB)
+
+    # K2 hotfix: despawned walkers (kernel completes the crossing and
+    # invalidates the row, so sim_valid reads 0) no longer draw an entity — a
+    # faded trail-endpoint marker plus the clear step keep the history honest.
+    done_map = walker_done_steps or {}
+    for r in sorted(walker_set):
+        if not (0 <= r < len(agent_i32)) or int(agent_i32[r, 2]) == 1:
+            continue  # waiting / crossing walkers draw in the loop above
+        done_at = int(done_map.get(r, -1))
+        if done_at < 0:
+            continue
+        seg_pts = (walker_trails or {}).get(r)
+        if seg_pts is None or len(seg_pts) == 0:
+            continue
+        ex, ey = float(seg_pts[-1][0]), float(seg_pts[-1][1])
+        ecx, ecy = _world_to_px(ex, ey, center, scale, size_px)
+        rr = max(min_walker_px / 2.0, 0.25 * scale)
+        draw.ellipse([ecx - rr, ecy - rr, ecx + rr, ecy + rr], fill=WALKER_CLEARED_RGB)
+        draw.text((ecx + rr + 2, ecy - rr - 2), f"cleared @step{done_at}", fill=GIF_COLORS["ink"])
 
     # HUD + scale bar (top-right only: the legend lives in the standalone
     # legend.png; frames end the HUD with a pointer to it)
@@ -1475,6 +1549,14 @@ def walker_legend_entries(kernel_mode=False):
     return [
         {"sw": "traildot", "cls": "walker", "colors": [GIF_COLORS["walker"]],
          "en": text, "zh": zh},
+        {"sw": "traildot", "cls": "walker", "colors": [WALKER_CLEARED_RGB],
+         "en": "faded dot + 'cleared @stepN': walker finished crossing and despawned "
+               "(kernel hotfix: the row left the sim)",
+         "zh": "淡化圆点+cleared @stepN：行人完成横穿即 despawn（行已离开仿真）"},
+        {"sw": "rectframe", "cls": "walker", "colors": [WALKER_Z_RGB],
+         "en": "annotation box: car-walker center <3 m and |dz|>=2.5 m — different road "
+               "level, cannot touch (TerraZero Z-separation 2.5 m)",
+         "zh": "标注框：车-行人中心距<3m 且 |dz|≥2.5m——不同路面层，不可能接触"},
     ] + ([] if kernel_mode else [
         {"sw": "rect", "cls": "cut_in", "colors": [HAZARD_CLASS_COLORS["cut_in"]],
          "en": "cut-in maker: scripted merging vehicle", "zh": "cut-in 车"},
@@ -1542,6 +1624,8 @@ def _draw_swatch(d, entry, x, cy, sw, sh, small_font):
         r = sh * 0.6
         dcx = x + sw * 0.75
         d.ellipse([dcx - r, cy - r, dcx + r, cy + r], fill=colors[0], outline=ink)
+    elif kind == "rectframe":  # K2 hotfix: outline-only box (z-separation annotation box)
+        d.rectangle([x, cy - sh // 2, x + sw, cy + sh // 2], outline=colors[0], width=2)
     elif kind == "dash":
         for dx in range(0, sw, 7):
             d.line([x + dx, cy, x + dx + 4, cy], fill=colors[0], width=2)
@@ -1600,15 +1684,16 @@ def full_map_world_to_px(map_corners):
 def render_full_map(step, agent_f32, agent_i32, road_elements, traffic_elements,
                     sdc_row, map_corners, dt, seed, map_name, mode_label,
                     static_indices=None, static_class_of=None,
-                    walker_indices=None, walker_trails=None):
+                    walker_indices=None, walker_trails=None, walker_done_steps=None):
     """Whole-map keyframe from the shared pillow renderer (class coloring,
-    forced >=12 px cone diamonds, forced >=12 px walker dots)."""
+    forced >=12 px cone diamonds, forced >=12 px walker dots, K2 hotfix
+    z-separation annotation + despawned-walker cleared markers)."""
     center, window_m = map_window(map_corners)
     return render_gif_frame(step, agent_f32, agent_i32, road_elements, traffic_elements,
                             sdc_row, center, window_m, FULL_MAP_PX, dt, seed, map_name,
                             mode_label=mode_label, static_indices=static_indices,
                             static_class_of=static_class_of, walker_indices=walker_indices,
-                            walker_trails=walker_trails)
+                            walker_trails=walker_trails, walker_done_steps=walker_done_steps)
 
 
 def render_legend_png(path, mode, cjk_path=None, spawned=None):
@@ -2277,6 +2362,10 @@ def write_root_artifacts(root, seed_summaries, cjk_path=None, mode_label="static
 WALKER_SIZE_M = 0.5
 WALKER_RGB = (255, 0, 255)              # GIF_COLORS["walker"] = #FF00FF
 WALKER_MIN_DIAM_PX = 12                 # sub-meter hazard marker rule (full maps)
+WALKER_Z_ANNOTATE_M = 2.5               # K2 hotfix: TerraZero Z-separation口径 (report Table 7 multi-layer filter); |dz| >= this -> different road level
+WALKER_Z_PAIR_DIST_M = 3.0              # K2 hotfix: car-walker center-distance scan radius for the annotation
+WALKER_Z_RGB = (204, 82, 0)             # K2 hotfix: annotation box/tag color (dark orange; distinct from walker magenta / vehicle blue)
+WALKER_CLEARED_RGB = (250, 150, 250)    # K2 hotfix: walker magenta faded ~60% toward the page background (despawned endpoint marker)
 WALKER_SPEED_RANGE = (1.2, 1.6)         # m/s, drawn per walker from the seed rng
 WALKER_START_STAGGER_STEPS = 12
 WALKER_REACTION_RADIUS_M = 15.0         # "obvious slowdown" scan radius
@@ -2804,6 +2893,14 @@ def run_jaywalker(args, map_bin):
                 **({cut_in["row"]: "cut_in"} if cut_in else {})}
     static_indices = list(class_of)
     walker_rows = [w["row"] for w in walkers]
+
+    def walker_done_map():
+        """K2 hotfix: row -> kernel-latched done_step (-1 = not finished yet);
+        the render only reads this for the despawned walker's 'cleared @stepN'
+        tag (the entity itself disappears once the kernel invalidates the row)."""
+        return {w["row"]: int(w["done_step"]) if w.get("done_step") is not None else -1
+                for w in walkers}
+
     trails = {w["row"]: [(float(af0[w["row"], 0]), float(af0[w["row"], 1]))] for w in walkers}
     cut_trail = ([(float(af0[cut_in["row"], 0]), float(af0[cut_in["row"], 1]))]
                  if cut_in else None)
@@ -2825,6 +2922,7 @@ def run_jaywalker(args, map_bin):
                               map_corners, dt, args.seed, map_bin.stem, mode_label,
                               static_indices=static_indices, static_class_of=class_of,
                               walker_indices=walker_rows,
+                              walker_done_steps=walker_done_map(),
                               walker_trails={r: np.asarray(p) for r, p in trails.items()})
         path = jw_dir / f"env0_t{step:03d}.png"
         pil.save(path)
@@ -2889,11 +2987,20 @@ def run_jaywalker(args, map_bin):
                     w["done_step"] = int(getter_t["done_step"][k])
                     w["completed"] = True
                     w["duration_s"] = float(getter_t["duration_s"][k])
+                    # K2 hotfix: the kernel despawned the row this step (the capture
+                    # now reads INVALID_POSITION) — pin the analytic far-edge pose
+                    # (start + travel heading * crossing width) as the trail endpoint
+                    # so the cleared marker sits exactly on the far-edge line.
+                    trails[w["row"]].append((
+                        w["start"][0] + float(np.cos(w["heading"])) * w["crossing_width_m"],
+                        w["start"][1] + float(np.sin(w["heading"])) * w["crossing_width_m"]))
                 w["min_dist_to_vehicle_m"] = (float(getter_t["min_dist_m"][k])
                                               if getter_t["min_dist_m"][k] >= 0 else None)
                 w["contact_events"] = int(getter_t["contact_events"][k])
             walkers_final_getter = getter_t
         for w in walkers:
+            if int(ai0[w["row"], 2]) != 1:
+                continue  # K2 hotfix: despawned kernel row reads INVALID_POSITION — trail stays pinned
             trails[w["row"]].append((float(af0[w["row"], 0]), float(af0[w["row"], 1])))
             if not kernel_mode and w["row"] in written:
                 px, py = written[w["row"]]
@@ -2939,7 +3046,8 @@ def run_jaywalker(args, map_bin):
                          gif_center, HAZARD_GIF_WINDOW_M, 900, dt, args.seed,
                          map_bin.stem, mode_label=mode_label,
                          static_indices=static_indices, static_class_of=class_of,
-                         walker_indices=walker_rows, walker_trails=trail_arrays)
+                         walker_indices=walker_rows, walker_trails=trail_arrays,
+                         walker_done_steps=walker_done_map())
         for st, af, ai in gif_frames
     ]
     if gif_imgs:
@@ -3158,6 +3266,7 @@ def run_jaywalker(args, map_bin):
                                  dt, args.seed, map_bin.stem, mode_label=mode_label,
                                  static_indices=static_indices, static_class_of=class_of,
                                  min_cone_px=0, walker_indices=walker_rows,
+                                 walker_done_steps=walker_done_map(),
                                  walker_trails={r: p[:t + 1] for r, p in trail_arrays.items()},
                                  walker_min_px=0)
         wpos = trails[w["row"]][min(t, len(trails[w["row"]]) - 1)]
@@ -3175,7 +3284,8 @@ def run_jaywalker(args, map_bin):
     pil = render_full_map(steps_run, af0, ai0, road_elements, traffic_elements, sdc_row,
                           map_corners, dt, args.seed, map_bin.stem, mode_label,
                           static_indices=static_indices, static_class_of=class_of,
-                          walker_indices=walker_rows, walker_trails=trail_arrays)
+                          walker_indices=walker_rows, walker_trails=trail_arrays,
+                          walker_done_steps=walker_done_map())
     pil = add_trail_annotations(pil, walkers, trail_arrays,
                                 full_map_world_to_px(map_corners), cut_in, cut_trail, cjk_font)
     pil.save(seed_dir / "trails.png")
@@ -3218,6 +3328,11 @@ def run_jaywalker(args, map_bin):
         "walker 全图强制 ≥12px 圆点，zoom 按真实尺度；walker_pixel_counts 对所有应含 walker 的图"
         "做像素审计，任何一张为 0 即硬失败（机制沿用锥桶审计）；zoom 对准每个 walker 横穿中点时刻；"
         "trails.png = 最终帧叠加全程轨迹 + 起点/终点标记。",
+        "K2 热修（owner 视觉验收：车辆似从冻结 walker 上碾过）：探针复跑证实 = 顶视图层间分离"
+        "（seed43 walker row150 冻结于 z=-1.64 的地面路对侧路缘，steps 56/57/83/91 有 z=+8.26 的高架路"
+        "车辆真尺度 OBB 在 2D 压过它，最近中心距 0.14m，dz=9.9m → 内核 z-gate 全部正确拒绝，零接触零 latch，"
+        "H3 排除）；渲染修正 = walker 增真尺度 0.5m 细框（放大圆点仅为可见性）、冻结 walker 空心+done 标签、"
+        "不同层车辆（|dz|≥2m 且 2D 压叠 walker）空心+dz 标注、HUD 增 walker_z、图例增四行；内核未改。",
         "回归约束：baseline / static-hazards 代码路径未动（渲染器新参数全部默认关闭，"
         "图例仅 jaywalker 模式增行），三 seed 数字已验证 byte-identical。",
     ]
@@ -3602,6 +3717,13 @@ def run_mix(args, map_bin, cfg):
     static_class_of = {e["idx"]: e["kind"] for e in initial}
     static_indices = list(static_class_of)
     walker_rows = [w["row"] for w in walkers]
+
+    def walker_done_map():
+        """K2 hotfix: row -> done_step (-1 = not finished yet); only consumed
+        by the render's despawn branch, which mix/python walkers never enter
+        (python stepping keeps the frozen row sim_valid=1)."""
+        return {w["row"]: int(w["done_step"]) if w.get("done_step") is not None else -1
+                for w in walkers}
     zone_centers = {}
     for e in placed:
         key = e.get("cluster_id") or e.get("zone_id")
@@ -3628,6 +3750,7 @@ def run_mix(args, map_bin, cfg):
                               map_corners, args.dt, args.seed, map_bin.stem, "mix",
                               static_indices=static_indices, static_class_of=static_class_of,
                               walker_indices=walker_rows,
+                              walker_done_steps=walker_done_map(),
                               walker_trails={r: np.asarray(p) for r, p in trails.items()})
         path = mix_dir / f"env0_t{step:03d}.png"
         pil.save(path)
@@ -3731,7 +3854,8 @@ def run_mix(args, map_bin, cfg):
                          gif_center, HAZARD_GIF_WINDOW_M, 900, args.dt, args.seed,
                          map_bin.stem, mode_label="mix",
                          static_indices=static_indices, static_class_of=static_class_of,
-                         walker_indices=walker_rows, walker_trails=trail_arrays)
+                         walker_indices=walker_rows, walker_trails=trail_arrays,
+                         walker_done_steps=walker_done_map())
         for st, af, ai in gif_frames
     ]
     if gif_imgs:
@@ -3946,6 +4070,7 @@ def run_mix(args, map_bin, cfg):
                                      static_indices=static_indices,
                                      static_class_of=static_class_of,
                                      walker_indices=walker_rows,
+                                     walker_done_steps=walker_done_map(),
                                      walker_trails={r: p[:t + 1] for r, p in trail_arrays.items()},
                                      min_cone_px=0, walker_min_px=0)
             m_img = add_hazard_callouts(m_img, hazards_in_window(placed, ctr, ZOOM_WINDOW_M),
@@ -3971,6 +4096,7 @@ def run_mix(args, map_bin, cfg):
                                  args.dt, args.seed, map_bin.stem, mode_label="mix",
                                  static_indices=static_indices, static_class_of=static_class_of,
                                  walker_indices=walker_rows,
+                                 walker_done_steps=walker_done_map(),
                                  walker_trails={r: p[:t + 1] for r, p in trail_arrays.items()},
                                  min_cone_px=0, walker_min_px=0)
         wpos = trails[w["row"]][min(t, len(trails[w["row"]]) - 1)]
@@ -3987,7 +4113,8 @@ def run_mix(args, map_bin, cfg):
         pil = render_full_map(steps_run, af0, ai0, road_elements, traffic_elements, sdc_row,
                               map_corners, args.dt, args.seed, map_bin.stem, "mix",
                               static_indices=static_indices, static_class_of=static_class_of,
-                              walker_indices=walker_rows, walker_trails=trail_arrays)
+                              walker_indices=walker_rows, walker_trails=trail_arrays,
+                              walker_done_steps=walker_done_map())
         pil = add_trail_annotations(pil, walkers, trail_arrays,
                                     full_map_world_to_px(map_corners), cut_in, cut_trail, cjk_font)
         pil.save(seed_dir / "trails.png")

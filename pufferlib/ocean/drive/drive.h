@@ -40,7 +40,7 @@ typedef struct {
     float crossing_width_m; // start -> far-side end distance (clears the far edge line = done)
     float traveled_m;
     int start_step;         // first timestep the walker advances (1 + k * WALKER_START_STAGGER_STEPS)
-    int done_step;          // timestep completion latched at (-1 = waiting / still crossing)
+    int done_step;          // completion==despawn timestep (K2 hotfix: row invalidated at this step; -1 = waiting / still crossing)
     int completed;
     float min_dist_m;       // min center distance to a valid dynamic agent while crossing (<0 = none observed)
     int contact_events;     // rising edges of bare-OBB contact with dynamic agents
@@ -6532,8 +6532,14 @@ static void record_short_early_reset(Drive *env) {
 
 // K2: advance the scripted walkers inside c_step. O(walker_count) pure math +
 // the min-distance/contact scans over active agents; zero allocation (hot-path
-// contract). Waiting walkers stand at the kerb, finished walkers stay frozen at
-// the far edge line (the prototype leaves them standing with v=0 too).
+// contract). Waiting walkers stand at the kerb; a walker that reaches the far
+// edge line despawns immediately (K2 hotfix, TerraZero: jaywalkers walk
+// "perpendicular to the road until they clear the far edge" — once cleared they
+// leave the sim, exactly like a removed dynamic agent: INVALID_POSITION +
+// sim_valid=0 drops the row from every collision/obs/neighbor scan for the rest
+// of the episode). done_step records the completion==despawn timestep; the
+// telemetry fields (completed / duration / min_dist / contact) are final in
+// WalkerState at that point and outlive the invalidated row.
 static void move_walkers(Drive *env) {
     for (int k = 0; k < env->walker_count; k++) {
         WalkerState *w = &env->walkers[k];
@@ -6579,6 +6585,15 @@ static void move_walkers(Drive *env) {
             w->contact_events++;
         }
         w->was_in_contact = contact_now;
+        if (reached) {
+            // K2 hotfix: despawn the completed walker. Same treatment as a removed
+            // dynamic agent (invalidate_agent): consumers already skip
+            // INVALID_POSITION / sim_valid!=1 rows, so the cleared walker stops
+            // participating in collision checks, partner obs and metrics scans.
+            // The final crossing-step scan above ran on the true far-edge pose,
+            // so min_dist/contact keep their pre-hotfix values.
+            invalidate_agent(agent);
+        }
     }
 }
 

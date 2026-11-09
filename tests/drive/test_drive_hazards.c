@@ -284,9 +284,11 @@ static int test_hazard_steps_clean_and_neutral_knob_permutations(void) {
 // disable leaves the episode stream bit-identical to the K1 hazard stream (the walker
 // block consumes no RNG draws and reserves no slots); same seed -> identical placement
 // and rollout; stepping invariants (per-step displacement = speed*dt, staggered start,
-// completion latch at the far edge line, freeze afterwards); type = PEDESTRIAN; static
-// slots stay metric-free (compute_metrics never runs on them = the minimal pedestrian
-// exemption). Zero-malloc is a code-walk property: place_crossing_walkers allocates
+// completion latch at the far edge line, despawn afterwards — K2 hotfix: the completed
+// row is invalidated (INVALID_POSITION + sim_valid=0) and stays dead, telemetry
+// final in WalkerState); type = PEDESTRIAN; static slots stay metric-free
+// (compute_metrics never runs on them = the minimal pedestrian exemption).
+// Zero-malloc is a code-walk property: place_crossing_walkers allocates
 // only at reset, move_walkers is O(walker_count) pure math with no allocation.
 // =====================================================================================
 
@@ -468,10 +470,12 @@ static int test_walker_stepping_completion_and_metrics(void) {
                 continue;
             }
             if (w->done_step >= 0) {
-                // frozen exactly on the far edge line (traveled == crossing width)
+                // K2 hotfix: completed walkers despawn immediately — the row left
+                // the sim (INVALID_POSITION + sim_valid=0), telemetry final
                 EXPECT_NEAR(w->traveled_m, w->crossing_width_m, 1e-5f);
-                EXPECT_NEAR(agent->sim_x, w->start_x + w->dir_x * w->crossing_width_m, 1e-4f);
-                EXPECT_NEAR(agent->sim_speed, 0.0f, 1e-6f);
+                EXPECT_EQ_INT(agent->sim_x == INVALID_POSITION, 1);
+                EXPECT_EQ_INT(agent->sim_y == INVALID_POSITION, 1);
+                EXPECT_EQ_INT(agent->sim_valid, 0);
                 EXPECT_EQ_INT(w->completed, 1);
                 continue;
             }
@@ -494,6 +498,32 @@ static int test_walker_stepping_completion_and_metrics(void) {
     }
     EXPECT_TRUE(all_done_step > 0); // every walker reached the far edge inside the window
     EXPECT_TRUE(all_done_step < 85); // the episode (scenario_length 91) outlives the crossings
+
+    // K2 hotfix: despawned rows stay dead — further neutral steps must not
+    // resurrect the agent row or touch the finalized telemetry
+    WalkerState final_snapshot[2];
+    for (int k = 0; k < count; k++) {
+        final_snapshot[k] = env.walkers[k];
+        EXPECT_EQ_INT(env.agents[env.walkers[k].agent_idx].sim_x == INVALID_POSITION, 1);
+        EXPECT_EQ_INT(env.agents[env.walkers[k].agent_idx].sim_valid, 0);
+    }
+    for (int t = 0; t < 5; t++) {
+        drive_set_neutral_actions(&env);
+        c_step(&env);
+    }
+    for (int k = 0; k < count; k++) {
+        const WalkerState *w = &env.walkers[k];
+        const Agent *agent = &env.agents[w->agent_idx];
+        EXPECT_EQ_INT(agent->sim_x == INVALID_POSITION, 1);
+        EXPECT_EQ_INT(agent->sim_valid, 0);
+        EXPECT_EQ_INT(w->done_step, final_snapshot[k].done_step);
+        EXPECT_EQ_INT(w->completed, 1);
+        EXPECT_NEAR(w->min_dist_m, final_snapshot[k].min_dist_m, 0.0f);
+        EXPECT_EQ_INT(w->contact_events, final_snapshot[k].contact_events);
+        // duration getter stays final after despawn (done_step - start_step + 1 steps * dt)
+        EXPECT_NEAR((w->done_step - w->start_step + 1) * env.dt,
+                    (final_snapshot[k].done_step - final_snapshot[k].start_step + 1) * env.dt, 0.0f);
+    }
 
     // static slots stay infraction-free: compute_metrics never runs on walkers, so no
     // red-light/stop-sign/offroad/collision infraction can ever latch onto them. The

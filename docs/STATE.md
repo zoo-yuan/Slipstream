@@ -10,7 +10,7 @@ As-of: adb8dc3
 - remotes：`origin` = zoo-yuan/Slipstream（本仓）；`upstream` = Emerge-Lab/PufferDrive（只读）。
 - 本仓自有资产：`.wayfinder/`（TerraZero 复刻地图）+ `scripts/hazard_demo.py`（四模式：baseline / static-hazards / jaywalker / mix）+ `config/hazard_demo.yaml`（hazard 旋钮，init 前校验）+ `tests/test_hazard_demo.py`（32 passed）+ `docs/`。hazard 原型票已闭（M0-M3 全验收）。
 - **内核钉死纪律（2026-11-05 起）**：运行只用本仓自编译 .so（`NO_TRAIN=1 python setup.py build_ext --inplace --force`，可复现构建，sha256 `443d302f…`）；兄弟仓解释器仅作 Python 借用（`PYTHONPATH=$PWD`）；所有 summary 带 kernel 溯源块（pufferlib 路径 + .so sha256 + git sha），非本仓内核 RuntimeError 拒跑。
-- **仿真锚点（新内核，2026-11-05 重定）**：baseline seed42 = 200 步/31 碰撞/0 offroad（旧内核 135/78/11 已废）；static-hazards 碰撞增量 s42 +116.7%/s43 +133.3%/s44 +16.0%；jaywalker 6/6 横穿完成、min 距离 1.012m、1 次接触（s44）、减速事件 0（诚实零）、cut-in 3×abandoned（替代方案已录）。
+- **仿真锚点（K4a 新执法面，2026-11-09 重定）**：执法默认 = footprint 扫越 + dwell [0.5,1.5]（TerraZero 口径；legacy 逃生门可显式传旧旋钮复现）。baseline = s42 200/26/1（红灯 latch 31、停牌 45）/ s43 192/21/0 / s44 200/11/0；kernel-static 增量 +140%/+41%/+64%；mix s42 = 10→25。完整表：artifacts/reanchor-k4/comparison.md。（旧锚 200/31/0 属 legacy 执法面，可经逃生门复现）
 - 已裁决（详见地图 Decisions so far）：Slipstream 为主仓；能力包 = 程序化场景生成层 + 零演示配方 + sim-agent（吞吐改造出界）；验收 = 内部优先 + 外部榜单为辅；算力 = 单服务器 GPU；`9_bernhard_dev` = 挖矿源。
 - 兄弟仓 `../PufferDrive`：Nova bridge 线已落生产代码（`4875b53f`：ACTION_TYPE_CONTROL + acc wash-in + Apollo lane matching）+ 全套 strata 文档；E1a/E1b 桥依赖现状见 `.wayfinder/research/e1-dependencies.md`（公共 7 具备/4 缺/3 阻塞；E1a 另缺 Nova 权重）。
 - 评测资产：`external/interplan`（Apache-2.0，80+335 场景，缺 nuPlan 数据本体）；val14 官方闭环 = 仓内 MIT cosim/nuplan 栈（选型见 `.wayfinder/research/val14-harness-options.md`）。

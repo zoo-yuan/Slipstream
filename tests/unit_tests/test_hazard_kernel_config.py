@@ -190,5 +190,41 @@ class TestHazardKernelConfig(unittest.TestCase):
             Drive(**base, hazard_walkers_enable=True, hazard_walkers_n_hi=99)
 
 
+class TestRouteProgressShaping(unittest.TestCase):
+    """T1 route-progress shaping: the coef interval defaults to the calibrated ON face,
+    [0, 0] is the stream-neutral escape hatch, and the kernel constant layout stays
+    coherent (coef idx 14 inserted before the dynamic conditioning coefs)."""
+
+    def test_default_interval_is_calibrated_on_face_and_reaches_binding(self):
+        env = Drive(config_only=True)
+        self.assertEqual(env.reward_progress_lo, 2.5e-4)
+        self.assertEqual(env.reward_progress_hi, 2.5e-3)
+        kwargs = env._env_init_kwargs(map_file="x.bin", max_agents=32)
+        self.assertEqual(kwargs["reward_progress_lo"], 2.5e-4)
+        self.assertEqual(kwargs["reward_progress_hi"], 2.5e-3)
+
+    def test_escape_hatch_zero_interval_passes_through(self):
+        env = Drive(config_only=True, reward_progress_lo=0.0, reward_progress_hi=0.0)
+        kwargs = env._env_init_kwargs(map_file="x.bin", max_agents=32)
+        self.assertEqual(kwargs["reward_progress_lo"], 0.0)
+        self.assertEqual(kwargs["reward_progress_hi"], 0.0)
+
+    def test_fail_fast_on_invalid_interval(self):
+        with self.assertRaisesRegex(ValueError, "reward_progress_lo/hi"):
+            Drive(config_only=True, reward_progress_lo=2.5e-3, reward_progress_hi=2.5e-4)
+        with self.assertRaisesRegex(ValueError, "reward_progress_lo/hi"):
+            Drive(config_only=True, reward_progress_lo=float("nan"), reward_progress_hi=2.5e-3)
+
+    def test_kernel_constant_layout_coherent(self):
+        # Only the constants the binding re-exports; the remaining layout indices
+        # (REWARD_F32_PROGRESS_IDX=13, NUM_METRICS=19, ROUTE_PROGRESS_IDX=18) are
+        # compile-time constants.h facts exercised by the stream check + viz labels.
+        from pufferlib.ocean.drive import binding
+
+        self.assertEqual(binding.NUM_REWARD_COEFS, 19)
+        self.assertEqual(binding.REWARD_COEF_PROGRESS, 14)
+        self.assertEqual(binding.REWARD_F32_FIELDS, 15)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2012,6 +2012,13 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->reward_stop_line = (float) unpack(kwargs, "reward_stop_line");
     env->reward_timestep = (float) unpack(kwargs, "reward_timestep");
     env->reward_overspeed = (float) unpack(kwargs, "reward_overspeed");
+    env->reward_progress_lo = (float) unpack(kwargs, "reward_progress_lo");
+    env->reward_progress_hi = (float) unpack(kwargs, "reward_progress_hi");
+    if (!isfinite(env->reward_progress_lo) || !isfinite(env->reward_progress_hi)
+        || env->reward_progress_lo > env->reward_progress_hi) {
+        PyErr_SetString(PyExc_ValueError, "reward_progress_lo/hi must be finite with lo <= hi ([0, 0] disables the term)");
+        return -1;
+    }
     env->overspeed_tolerance_mps = (float) unpack(kwargs, "overspeed_tolerance_mps");
     if (!(env->overspeed_tolerance_mps >= 0.0f) || !isfinite(env->overspeed_tolerance_mps)) {
         PyErr_SetString(PyExc_ValueError, "overspeed_tolerance_mps must be finite and >= 0");
@@ -2419,6 +2426,7 @@ static int my_log(PyObject *dict, Env *env, Log *log, float n) {
     assign_to_dict(dict, "reward_components/timestep", log->reward_timestep);
     assign_to_dict(dict, "reward_components/reverse", log->reward_reverse);
     assign_to_dict(dict, "reward_components/overspeed", log->reward_overspeed);
+    assign_to_dict(dict, "reward_components/progress", log->reward_progress);
     assign_to_dict(dict, "reward_components/ade", log->reward_ade);
 
     if (env->compute_eval_metrics) {

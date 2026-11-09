@@ -348,19 +348,20 @@ static const int ROAD_OFFSETS[25][2]
 #define REWARD_COEF_STOP_LINE 11
 #define REWARD_COEF_TIMESTEP 12
 #define REWARD_COEF_OVERSPEED 13
+#define REWARD_COEF_PROGRESS 14       // T1 signed route-progress shaping (see drive.h compute_rewards)
 // Dynamic conditioning coefficients
-#define REWARD_COEF_THROTTLE 14
-#define REWARD_COEF_STEER 15
-#define REWARD_COEF_ACC 16
-#define REWARD_COEF_SPEED 17
-#define NUM_REWARD_COEFS 18
+#define REWARD_COEF_THROTTLE 15
+#define REWARD_COEF_STEER 16
+#define REWARD_COEF_ACC 17
+#define REWARD_COEF_SPEED 18
+#define NUM_REWARD_COEFS 19
 
 // =====================================================================================
 // 10. METRICS & SCORING
 // =====================================================================================
 
 // Indices into Agent.metrics_array; NUM_METRICS must stay equal to the index count
-#define NUM_METRICS 18
+#define NUM_METRICS 19
 #define COLLISION_IDX 0
 #define OFFROAD_IDX 1
 #define RED_LIGHT_IDX 2
@@ -380,6 +381,7 @@ static const int ROAD_OFFSETS[25][2]
 #define PROGRESS_RATIO_IDX 15
 #define MULTI_LANE_TIME_IDX 16
 #define MULTI_LANE_SCORE_IDX 17
+#define ROUTE_PROGRESS_IDX 18 // signed along-route displacement per step / ROUTE_PROGRESS_REF_DIST_M (T1 shaping signal)
 
 // Time to collision
 #define DEFAULT_TTC 5.0f              // when no vehicle ahead
@@ -402,6 +404,10 @@ static const int ROAD_OFFSETS[25][2]
 
 #define METRIC_SCORE_WINDOW_SECONDS 10.0f
 #define PUFFER_PROGRESS_REFERENCE_SPEED 10.0f
+// Route-progress shaping normalization (T1): the per-step signal is
+// v_signed * dt * cos(theta_lane) / ROUTE_PROGRESS_REF_DIST_M, i.e. along-route meters
+// traveled this step in units of 10 m. Bound: |signal| <= v_max*dt/10 = 0.2 at v_max=20.
+#define ROUTE_PROGRESS_REF_DIST_M 10.0f
 
 // =====================================================================================
 // 11. TELEMETRY
@@ -430,7 +436,8 @@ static const int ROAD_OFFSETS[25][2]
 #define REWARD_F32_TIMESTEP_IDX 10
 #define REWARD_F32_REVERSE_IDX 11
 #define REWARD_F32_OVERSPEED_IDX 12
-#define REWARD_F32_ADE_IDX 13
-#define REWARD_F32_FIELDS 14
+#define REWARD_F32_PROGRESS_IDX 13
+#define REWARD_F32_ADE_IDX 14
+#define REWARD_F32_FIELDS 15
 
 #endif

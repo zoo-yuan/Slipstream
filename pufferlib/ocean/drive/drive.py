@@ -34,6 +34,11 @@ class Drive(pufferlib.PufferEnv):
         reward_stop_line=1.0,
         reward_timestep=0.000025,
         reward_overspeed=0.005,
+        # T1 route-progress shaping coef sampling interval (per-agent ~ U(lo, hi)).
+        # Default = calibrated positive interval, i.e. the term is ON by default;
+        # pass [0, 0] to disable it and keep the pre-T1 reward stream bit-identical.
+        reward_progress_lo=2.5e-4,
+        reward_progress_hi=2.5e-3,
         overspeed_tolerance_mps=0.0,
         reward_ade=0.0,
         min_goal_spacing=20.0,
@@ -264,6 +269,17 @@ class Drive(pufferlib.PufferEnv):
         self.reward_stop_line = reward_stop_line
         self.reward_timestep = reward_timestep
         self.reward_overspeed = reward_overspeed
+        self.reward_progress_lo = float(reward_progress_lo)
+        self.reward_progress_hi = float(reward_progress_hi)
+        if (
+            not np.isfinite(self.reward_progress_lo)
+            or not np.isfinite(self.reward_progress_hi)
+            or self.reward_progress_lo > self.reward_progress_hi
+        ):
+            raise ValueError(
+                f"reward_progress_lo/hi must be finite with lo <= hi ([0, 0] disables the term), "
+                f"got {reward_progress_lo}, {reward_progress_hi}"
+            )
         self.overspeed_tolerance_mps = float(overspeed_tolerance_mps)
         if not (self.overspeed_tolerance_mps >= 0.0) or not np.isfinite(self.overspeed_tolerance_mps):
             raise ValueError(f"overspeed_tolerance_mps must be finite and >= 0, got {overspeed_tolerance_mps}")
@@ -701,6 +717,8 @@ class Drive(pufferlib.PufferEnv):
             "reward_stop_line": self.reward_stop_line,
             "reward_timestep": self.reward_timestep,
             "reward_overspeed": self.reward_overspeed,
+            "reward_progress_lo": self.reward_progress_lo,
+            "reward_progress_hi": self.reward_progress_hi,
             "overspeed_tolerance_mps": self.overspeed_tolerance_mps,
             "reward_ade": self.reward_ade,
             "collision_behavior": self.collision_behavior,

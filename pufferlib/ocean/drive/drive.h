@@ -106,6 +106,7 @@ struct Log {
     float reward_timestep;
     float reward_reverse;
     float reward_overspeed;
+    float reward_progress;
     float reward_ade;
     float spawn_failed;
     float spawn_reject_collision;
@@ -327,6 +328,8 @@ struct Drive {
     float reward_stop_line;
     float reward_timestep;
     float reward_overspeed;
+    float reward_progress_lo; // T1 route-progress shaping coef sampling interval; [0, 0] disables the term (escape hatch)
+    float reward_progress_hi;
     float overspeed_tolerance_mps;
     float reward_ade;
     int reward_conditioning;
@@ -451,6 +454,7 @@ static const RewardBound REWARD_BOUNDS[NUM_REWARD_COEFS] = {
     {0.0f, 1.0f, 0},       // REWARD_COEF_STOP_LINE       α_stop-line ~ U(0, 1)
     {0.0f, 5e-5f, 0},      // REWARD_COEF_TIMESTEP        α_timestep ~ U(0, 5e-5f)
     {0.0f, 0.1f, 0},       // REWARD_COEF_OVERSPEED       α_overspeed ~ U(0, 0.1)
+    {2.5e-4f, 2.5e-3f, 0}, // REWARD_COEF_PROGRESS        α_progress ~ U(2.5e-4, 2.5e-3) (T1 default; env knobs override)
     {0.8f, 1.25f, 0},      // REWARD_COEF_THROTTLE        C_throttle
     {0.8f, 1.25f, 0},      // REWARD_COEF_STEER           C_steer
     {0.666f, 1.5f, 0},     // REWARD_COEF_ACC             C_acc
@@ -473,6 +477,7 @@ static const RewardBound REWARD_BOUNDS_LOG[NUM_REWARD_COEFS] = {
     {0.0f, 1.0f, 0},       // REWARD_COEF_STOP_LINE       α_stop-line ~ U(0, 1)
     {0.0f, 5e-5f, 0},      // REWARD_COEF_TIMESTEP        α_timestep ~ U(0, 5e-5f)
     {0.0f, 0.1f, 0},       // REWARD_COEF_OVERSPEED       α_overspeed ~ U(0, 0.1)
+    {2.5e-4f, 2.5e-3f, 0}, // REWARD_COEF_PROGRESS        α_progress ~ U(2.5e-4, 2.5e-3) (T1 default; env knobs override)
     {0.8f, 1.25f, 0},      // REWARD_COEF_THROTTLE        C_throttle
     {0.8f, 1.25f, 0},      // REWARD_COEF_STEER           C_steer
     {0.666f, 1.5f, 0},     // REWARD_COEF_ACC             C_acc
@@ -2622,6 +2627,7 @@ static void add_log(Drive *env) {
         episode_log.reward_timestep += env->logs[i].reward_timestep;
         episode_log.reward_reverse += env->logs[i].reward_reverse;
         episode_log.reward_overspeed += env->logs[i].reward_overspeed;
+        episode_log.reward_progress += env->logs[i].reward_progress;
         episode_log.reward_ade += env->logs[i].reward_ade;
         // Comfort and velocity metrics (normalized per timestep)
         episode_log.comfort_violation_count += env->logs[i].comfort_violation_count / safe_timestep;
@@ -2752,6 +2758,15 @@ static void generate_reward_coefs(Drive *env, Agent *agent) {
         agent->reward_coefs[REWARD_COEF_STEER] = 1.0f;
         agent->reward_coefs[REWARD_COEF_ACC] = env->conditioning_accel_scale;
         agent->reward_coefs[REWARD_COEF_SPEED] = env->max_speed_mps / env->base_max_speed_mps;
+    }
+    // T1 route-progress shaping: sampled from the env-level [lo, hi] interval, independent
+    // of reward_randomization so the term is on by default. [0, 0] pins the coef to zero
+    // AND skips the RNG draw, keeping the pre-T1 stream bit-identical (escape hatch).
+    if (env->reward_progress_lo != 0.0f || env->reward_progress_hi != 0.0f) {
+        agent->reward_coefs[REWARD_COEF_PROGRESS]
+            = sample_uniform(&env->rng_state, env->reward_progress_lo, env->reward_progress_hi);
+    } else {
+        agent->reward_coefs[REWARD_COEF_PROGRESS] = 0.0f;
     }
 }
 
@@ -5452,6 +5467,13 @@ static void compute_metrics(Drive *env, int agent_idx, int log_idx) {
         agent->metrics_array[VELOCITY_PROGRESS_IDX] = 0.0f;
     }
 
+    // Route progress metric (T1 shaping signal): along-lane displacement this step,
+    // normalized by ROUTE_PROGRESS_REF_DIST_M. Forward along the lane = positive,
+    // reverse = negative (covers both reverse gear and wrong-way driving). Off-lane
+    // LANE_ANGLE_IDX is 0, so the signal vanishes off-road; reset paths leave it 0.
+    agent->metrics_array[ROUTE_PROGRESS_IDX]
+        = agent->sim_speed_signed * env->dt * agent->metrics_array[LANE_ANGLE_IDX] / ROUTE_PROGRESS_REF_DIST_M;
+
     // Comfort metric
     const float COMFORT_ACCEL_THRESHOLD = 3.0f; // m/s²
     const float COMFORT_JERK_THRESHOLD = 5.0f;  // m/s³
@@ -5627,6 +5649,13 @@ static void compute_rewards(Drive *env, int i) {
     agent_log->velocity_progress_sum += velocity_progress;
     agent_log->reward_velocity += velocity_reward;
 
+    // Route progress shaping (T1): coef * signed normalized along-route displacement this
+    // step (ROUTE_PROGRESS_IDX <= 0.2 at v_max). coef is per-agent from [lo, hi]; the
+    // [0, 0] escape hatch makes this term exactly zero.
+    float progress_reward = agent->reward_coefs[REWARD_COEF_PROGRESS] * agent->metrics_array[ROUTE_PROGRESS_IDX];
+    env->rewards[i] += progress_reward;
+    agent_log->reward_progress += progress_reward;
+
     // Timestep reward
     float accel = sqrtf(agent->accel_long * agent->accel_long + agent->accel_lat * agent->accel_lat);
     if (agent->sim_speed > 0.01f || accel > 0.01f) {
@@ -5742,6 +5771,12 @@ static int write_reward_target_obs(Drive *env, Agent *ego, float *obs, int obs_i
             if (coef_idx == REWARD_COEF_SPEED) {
                 lo = 1.0f / env->conditioning_speed_scale;
                 hi = env->conditioning_speed_scale;
+            }
+            if (coef_idx == REWARD_COEF_PROGRESS) {
+                // Normalize against the actual env knobs so the conditioning signal stays
+                // even when the run overrides the default interval ([0,0] yields exactly -1).
+                lo = env->reward_progress_lo;
+                hi = env->reward_progress_hi;
             }
             float coef = ego->reward_coefs[coef_idx];
             float normalized_coef;

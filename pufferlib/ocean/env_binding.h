@@ -843,6 +843,7 @@ static PyObject *vec_get_obs_html_frame(PyObject *self, PyObject *args) {
                 rewards_f32[reward_base + REWARD_F32_TIMESTEP_IDX] = log->reward_timestep;
                 rewards_f32[reward_base + REWARD_F32_REVERSE_IDX] = log->reward_reverse;
                 rewards_f32[reward_base + REWARD_F32_OVERSPEED_IDX] = log->reward_overspeed;
+                rewards_f32[reward_base + REWARD_F32_PROGRESS_IDX] = log->reward_progress;
                 rewards_f32[reward_base + REWARD_F32_ADE_IDX] = log->reward_ade;
             }
         }
@@ -1713,6 +1714,7 @@ PyMODINIT_FUNC PyInit_binding(void) {
     PyModule_AddIntConstant(m, "REWARD_F32_FIELDS", REWARD_F32_FIELDS);
     PyModule_AddIntConstant(m, "TRAFFIC_I16_FIELDS", TRAFFIC_I16_FIELDS);
     PyModule_AddIntConstant(m, "NUM_REWARD_COEFS", NUM_REWARD_COEFS);
+    PyModule_AddIntConstant(m, "REWARD_COEF_PROGRESS", REWARD_COEF_PROGRESS);
     PyModule_AddIntConstant(m, "GOAL_REGEN_FINITE", GOAL_REGEN_FINITE);
     PyModule_AddIntConstant(m, "GOAL_REGEN_ROLLING", GOAL_REGEN_ROLLING);
     PyModule_AddIntConstant(m, "GOAL_SOURCE_ROUTE", GOAL_SOURCE_ROUTE);

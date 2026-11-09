@@ -10,18 +10,22 @@ catches ("擦边越线"), rendered by the long-term standard renderer (shared pi
 CJK font, standalone legend pointer).
 
 Knob face (pufferlib/ocean/drive, K3 commit):
-  - traffic_light_truth_timing (default off): bin-provided signal programs in gigaflow;
+  - traffic_light_truth_timing (K4a default off): bin-provided signal programs in gigaflow;
     inert on geometry-only bins (CARLA Town05: 54 lights, 0 with bin states) — every light
     takes the documented procedural fallback.
-  - traffic_light_footprint_sweep (default off): red light = swept full footprint vs the
+  - traffic_light_footprint_sweep (K4a default ON): red light = swept full footprint vs the
     stop bar (begin-contact edge trigger) instead of the legacy centre-point crossing.
-  - stop_sign_dwell_range (default [0,0]): per-sign sampled hold-below-speed dwell in
+  - stop_sign_dwell_range (K4a default [0.5,1.5]): per-sign sampled hold-below-speed dwell in
     seconds; [0,0] = legacy single-tick completion. Sampling consumes env RNG, so a live
-    range shifts the episode stream by design (bit-identity is an all-defaults contract).
-  - pedestrian_traffic_exempt (default on): pedestrians skip the road-exit/red-light/
+    range shifts the episode stream by design.
+  - pedestrian_traffic_exempt (K4a default on): pedestrians skip the road-exit/red-light/
     stop-sign entries. Inert today (no active PEDESTRIAN on gigaflow; K2 jaywalkers are
     static slots) — C unit tests tests/drive/test_drive_pedestrian_exempt.c carry the
     per-class evidence; no run numbers exist or are needed.
+
+Since K4a the python defaults carry the new semantics, so every config below pins the
+pre-K4a legacy face explicitly (LEGACY_KNOBS) and layers one knob on top — the table stays
+a knob-isolation comparison regardless of drive.py defaults.
 
 Run: PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/k3_knob_evidence.py --seed 42
 """
@@ -49,15 +53,24 @@ ZOOM_WINDOW_M = 90.0  # hazard_demo ZOOM_WINDOW_M: true-scale zoom renders
 ZOOM_PX = 900
 
 # (name, extra Drive kwargs, one-line semantics for the report table)
+# Pre-K4a legacy face, pinned explicitly: K4a flipped the python defaults, so an empty
+# kwargs dict no longer means legacy. Every config inherits these pins and layers its delta.
+LEGACY_KNOBS = {
+    "traffic_light_truth_timing": False,
+    "traffic_light_footprint_sweep": False,
+    "stop_sign_dwell_range": (0.0, 0.0),
+}
+
 K3_CONFIGS = (
-    ("legacy", {}, "commit defaults: truth off / sweep off / dwell [0,0] / ped exempt on (inert)"),
-    ("truth-timing", {"traffic_light_truth_timing": True},
+    ("legacy", dict(LEGACY_KNOBS),
+     "pre-K4a face: truth off / sweep off / dwell [0,0] / ped exempt on (inert)"),
+    ("truth-timing", {**LEGACY_KNOBS, "traffic_light_truth_timing": True},
      "bin-provided signal programs in gigaflow; no-op here — CARLA bins carry no states"),
-    ("footprint-sweep", {"traffic_light_footprint_sweep": True},
+    ("footprint-sweep", {**LEGACY_KNOBS, "traffic_light_footprint_sweep": True},
      "red light = swept footprint vs stop bar (begin-contact edge trigger)"),
-    ("dwell-0.5-1.5", {"stop_sign_dwell_range": (0.5, 1.5)},
-     "per-sign sampled dwell 0.5-1.5 s (K4 candidate range; consumes RNG by design)"),
-    ("all-on", {"traffic_light_truth_timing": True,
+    ("dwell-0.5-1.5", {**LEGACY_KNOBS, "stop_sign_dwell_range": (0.5, 1.5)},
+     "per-sign sampled dwell 0.5-1.5 s (the K4a default range; consumes RNG by design)"),
+    ("all-on", {**LEGACY_KNOBS, "traffic_light_truth_timing": True,
                 "traffic_light_footprint_sweep": True,
                 "stop_sign_dwell_range": (0.5, 1.5)},
      "all three active knobs together (ped gate stays at its inert default-on)"),

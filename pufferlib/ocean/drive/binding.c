@@ -2139,7 +2139,9 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->hazard_walkers_n_hi = (int) unpack(kwargs, "hazard_walkers_n_hi");
     env->hazard_walkers_speed_lo_mps = (float) unpack(kwargs, "hazard_walkers_speed_lo_mps");
     env->hazard_walkers_speed_hi_mps = (float) unpack(kwargs, "hazard_walkers_speed_hi_mps");
-    // K3 enforcement knobs (opt-in; defaults reproduce the legacy episode stream bit-for-bit).
+    // K3 enforcement knobs; K4a defaults (set in drive.py) carry the TerraZero semantics:
+    // sweep on, sampled dwell [0.5,1.5] s, truth timing off, pedestrian exemption on.
+    // Explicit legacy pins (sweep off + dwell [0,0], truth off) reproduce the pre-K4a stream.
     env->traffic_light_truth_timing = (int) unpack(kwargs, "traffic_light_truth_timing");
     env->traffic_light_footprint_sweep = (int) unpack(kwargs, "traffic_light_footprint_sweep");
     env->stop_sign_dwell_range_lo = (float) unpack(kwargs, "stop_sign_dwell_range_lo");

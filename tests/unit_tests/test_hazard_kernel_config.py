@@ -135,6 +135,37 @@ class TestHazardKernelConfig(unittest.TestCase):
         self.assertEqual(kwargs["hazard_walkers_speed_lo_mps"], 1.2)
         self.assertEqual(kwargs["hazard_walkers_speed_hi_mps"], 1.6)
 
+    def test_k4a_enforcement_defaults_carry_terrazero_semantics(self):
+        """K4a flip: the constructor defaults ARE the TerraZero enforcement face
+        (sweep on, sampled dwell [0.5,1.5] s, truth timing off, ped exemption on)."""
+        env = Drive(config_only=True)
+        kwargs = env._env_init_kwargs(map_file="x.bin", max_agents=32)
+        self.assertEqual(kwargs["traffic_light_footprint_sweep"], 1)
+        self.assertEqual(kwargs["traffic_light_truth_timing"], 0)
+        self.assertEqual(kwargs["stop_sign_dwell_range_lo"], 0.5)
+        self.assertEqual(kwargs["stop_sign_dwell_range_hi"], 1.5)
+        self.assertEqual(kwargs["pedestrian_traffic_exempt"], 1)
+
+    def test_explicit_legacy_pins_restore_pre_k4a_face(self):
+        """Legacy escape hatch: the explicit pre-K4a pins yield exactly the old
+        knob face (sweep off + dwell [0,0] + truth off); a live dwell range stays
+        fail-fast on inverted/invalid bounds."""
+        legacy = Drive(
+            config_only=True,
+            traffic_light_truth_timing=False,
+            traffic_light_footprint_sweep=False,
+            stop_sign_dwell_range=(0.0, 0.0),
+        )
+        kwargs = legacy._env_init_kwargs(map_file="x.bin", max_agents=32)
+        self.assertEqual(kwargs["traffic_light_footprint_sweep"], 0)
+        self.assertEqual(kwargs["traffic_light_truth_timing"], 0)
+        self.assertEqual(kwargs["stop_sign_dwell_range_lo"], 0.0)
+        self.assertEqual(kwargs["stop_sign_dwell_range_hi"], 0.0)
+        with self.assertRaisesRegex(ValueError, "stop_sign_dwell_range"):
+            Drive(config_only=True, stop_sign_dwell_range=(1.5, 0.5))
+        with self.assertRaisesRegex(ValueError, "stop_sign_dwell_range"):
+            Drive(config_only=True, stop_sign_dwell_range=(-0.1, 1.0))
+
     def test_binding_rejects_bad_config_at_env_init(self):
         # Defense-in-depth: even if Python-side validation were bypassed, the C
         # binding must fail-fast on malformed hazard config before the env runs.

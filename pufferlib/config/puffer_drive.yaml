@@ -91,6 +91,53 @@ env:
   disable_stop_sign_infractions: false
   # Cycle the lights of a junction phase-by-phase (TLPHASE1 bins); false keeps independent lights (legacy)
   traffic_light_junction_phases: false
+  # --- Hazard subsystem (K1 in-kernel static placement / K2 scripted crossing walkers) ---
+  # All placement knobs are env-config driven and validated before init (fail-fast).
+  # hazard_enable=false consumes no RNG draws: episodes stay bit-identical to a hazard-free env.
+  # Requires simulation_mode=gigaflow and cosim_partner_slots >= the planned-count-high budget.
+  hazard_enable: false
+  # Parked vehicles (car/bus/truck mix by size weights)
+  hazard_parked_enable: true
+  hazard_parked_n_lo: 6
+  hazard_parked_n_hi: 10
+  hazard_parked_car_weight: 0.6
+  hazard_parked_bus_weight: 0.2
+  hazard_parked_truck_weight: 0.2
+  # Collided clusters (rear_end / t_bone / both layouts)
+  hazard_clusters_enable: true
+  hazard_clusters_n_lo: 1
+  hazard_clusters_n_hi: 2
+  hazard_clusters_layout: both
+  # Cone zones (taper + block patterns)
+  hazard_cones_enable: true
+  hazard_cones_zones_lo: 1
+  hazard_cones_zones_hi: 2
+  hazard_cones_taper_cones: 8
+  hazard_cones_block_rows: 2
+  hazard_cones_block_cols: 7
+  hazard_cones_spacing_m: 1.5
+  hazard_cones_taper_prob: 0.5
+  # Scripted crossing walkers (PEDESTRIAN-typed static slots stepped by c_step)
+  hazard_walkers_enable: false
+  hazard_walkers_n_lo: 1
+  hazard_walkers_n_hi: 2
+  hazard_walkers_speed_lo_mps: 1.2
+  hazard_walkers_speed_hi_mps: 1.6
+  # --- Right-of-way enforcement knobs (K3 patches, K4a TerraZero defaults) ---
+  # Red-light violation = full-body swept path crossing the stop bar (TerraZero semantics);
+  # false = legacy centre-point crossing (pre-K4a escape hatch).
+  traffic_light_footprint_sweep: true
+  # Per-sign sampled hold-below-speed stop requirement in seconds; [0, 0] = legacy single-tick
+  # completion (escape hatch). Sampling consumes env RNG, so a live range shifts the episode
+  # stream by design. [0.5, 1.5] is a first calibration of the undisclosed TerraZero
+  # distribution; must be re-calibrated once experiment data arrives.
+  stop_sign_dwell_range: [0.5, 1.5]
+  # Gigaflow keeps bin-provided signal programs (replay semantics). Off by default: ODD-fidelity
+  # scenarios opt in; no-op on geometry-only CARLA/without-states bins (procedural fallback).
+  traffic_light_truth_timing: false
+  # Pedestrians skip the road-exit/red-light/stop-sign entries (TerraZero per-class rule;
+  # cyclists stay enforced as vehicles). Inert until active PEDESTRIAN agents exist.
+  pedestrian_traffic_exempt: true
   # Share static map geometry (roads/grid/lane-graph) across envs using the same map
   use_map_cache: true
   # Load all configured maps before fork so workers inherit shared geometry

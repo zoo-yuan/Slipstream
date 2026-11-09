@@ -1,7 +1,7 @@
 #include "include/drive_fixture.h"
 #include "include/test.h"
 
-// K3 pedestrian exemption gate + all-knobs-off stream bit-identity.
+// K3 pedestrian exemption gate + K4a enforcement-face stream tests.
 //
 // TerraZero per-class rule: pedestrians are exempt from the intersection right-of-way
 // infractions (road exit / red light / stop sign); cyclists stay enforced as vehicles and
@@ -9,10 +9,12 @@
 // VEHICLE-typed actives only; K2 jaywalkers are static slots that never reach
 // compute_metrics) and paves the way for sim-agent active pedestrians.
 //
-// The stream test pins the iron rule: all four K3 knobs at their defaults (truth timing off,
-// footprint sweep off, dwell range [0,0], ped exemption ON) leave the episode stream
-// bit-identical to a knob-free env - the ped gate consumes no RNG draws and no active
-// PEDESTRIAN exists for it to exempt.
+// Since K4a the python-side defaults carry the TerraZero enforcement semantics (sweep on,
+// dwell [0.5,1.5], truth off, ped exemption on); the C structs have no default source, so
+// the stream tests pin both faces explicitly: the legacy escape hatch (sweep off + dwell
+// [0,0], truth off) stays bit-identical to a knob-free env, and the documented default
+// dwell range stays active at the sampling level. The ped gate consumes no RNG draws and
+// no active PEDESTRIAN exists for it to exempt.
 
 // --- shared helpers -----------------------------------------------------------------
 
@@ -206,7 +208,17 @@ static int test_ped_exempt_stop_sign_not_flagged(void) {
     return 0;
 }
 
-// --- K3 iron rule: all knobs at defaults leave the stream bit-identical ---------------
+// --- K4a: legacy escape hatch + documented-default face -----------------------------
+//
+// Since K4a the python-side defaults (drive.py) carry the TerraZero semantics; the C
+// structs have no default source (zero-init = legacy), so both faces here are pinned
+// explicitly:
+//   legacy escape hatch: sweep off + dwell [0,0] (truth off) must leave the episode
+//   stream bit-identical to a knob-free env - the pre-K4a behavior stays reproducible.
+//   documented K4a face: sweep on + dwell [0.5,1.5] must show the new semantics at the
+//   stream level - sampled per-sign dwell requirements and an episode stream that
+//   diverges from the legacy face (dwell draws shift the RNG state by design).
+// Per-knob semantic evidence lives in test_drive_red_light.c / test_drive_stop_sign.c.
 
 static int k3_streams_bit_identical(const Drive *a, const Drive *b) {
     int obs_size = compute_observation_size((Drive *) a);
@@ -214,13 +226,13 @@ static int k3_streams_bit_identical(const Drive *a, const Drive *b) {
     return memcmp(a->observations, b->observations, bytes) == 0;
 }
 
-static int test_k3_defaults_keep_episode_stream_bit_identical(void) {
+static int test_explicit_legacy_knobs_keep_episode_stream_bit_identical(void) {
     srand(7);
     Drive bare = drive_test_env_config(drive_carla_map(), SIMULATION_MODE_GIGAFLOW, 16, 0);
     bare.init_seed = 42;
     bare.use_exact_episode_seed = 1;
 
-    // same config with every K3 knob pinned to its documented default
+    // same config with the legacy escape hatch pinned explicitly (pre-K4a face)
     Drive pinned = drive_test_env_config(drive_carla_map(), SIMULATION_MODE_GIGAFLOW, 16, 0);
     pinned.init_seed = 42;
     pinned.use_exact_episode_seed = 1;
@@ -228,7 +240,7 @@ static int test_k3_defaults_keep_episode_stream_bit_identical(void) {
     pinned.traffic_light_footprint_sweep = 0;
     pinned.stop_sign_dwell_range_lo = 0.0f;
     pinned.stop_sign_dwell_range_hi = 0.0f;
-    pinned.pedestrian_traffic_exempt = 1; // default ON: inert without active pedestrians
+    pinned.pedestrian_traffic_exempt = 1; // K4a default ON: inert without active pedestrians
 
     allocate(&bare);
     allocate(&pinned);
@@ -260,11 +272,43 @@ static int test_k3_defaults_keep_episode_stream_bit_identical(void) {
     return 0;
 }
 
+// The documented K4a default face (drive.py: sweep on, dwell [0.5,1.5]) must activate the
+// sampled dwell at the stream level: every reset draws a per-sign hold requirement from the
+// default range; the legacy escape hatch ([0,0]) keeps 0 = single-tick completion.
+// (C has no default source - zero-init means legacy - so the faces are pinned explicitly.)
+static int test_k4a_default_dwell_range_is_active(void) {
+    static int lanes[1] = {100};
+    TrafficControlElement tc = {0};
+    tc.type = TRAFFIC_CONTROL_TYPE_STOP_SIGN;
+    tc.num_controlled_lanes = 1;
+    tc.controlled_lanes = lanes;
+
+    Drive env = {0};
+    env.num_traffic_elements = 1;
+    env.traffic_elements = &tc;
+    env.stop_sign_dwell_range_lo = 0.5f; // documented K4a default range
+    env.stop_sign_dwell_range_hi = 1.5f;
+    for (int draw = 0; draw < 8; draw++) {
+        rng_seed(&env.rng_state, (uint64_t) (1000 + draw));
+        sample_stop_sign_dwells(&env);
+        EXPECT_TRUE(tc.stop_dwell_seconds >= 0.5f && tc.stop_dwell_seconds <= 1.5f);
+    }
+    // legacy escape hatch: dwell [0,0] consumes no RNG; a fresh reset-time element (dwell 0)
+    // stays at 0 = single-tick completion because the sampler early-returns on the dead range
+    env.stop_sign_dwell_range_lo = 0.0f;
+    env.stop_sign_dwell_range_hi = 0.0f;
+    tc.stop_dwell_seconds = 0.0f;
+    sample_stop_sign_dwells(&env);
+    EXPECT_NEAR(tc.stop_dwell_seconds, 0.0f, 0.0f);
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     RUN_TEST(test_ped_exempt_offgrid_offroad_not_flagged);
     RUN_TEST(test_ped_exempt_red_light_not_flagged);
     RUN_TEST(test_ped_exempt_stop_sign_not_flagged);
-    RUN_TEST(test_k3_defaults_keep_episode_stream_bit_identical);
+    RUN_TEST(test_explicit_legacy_knobs_keep_episode_stream_bit_identical);
+    RUN_TEST(test_k4a_default_dwell_range_is_active);
     return test_summary(failures);
 }

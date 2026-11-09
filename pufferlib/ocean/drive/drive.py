@@ -184,15 +184,21 @@ class Drive(pufferlib.PufferEnv):
         hazard_walkers_n_hi=2,
         hazard_walkers_speed_lo_mps=1.2,
         hazard_walkers_speed_hi_mps=1.6,
-        # K3 enforcement knobs (opt-in; all-defaults reproduce the legacy episode stream bit-for-bit):
-        # truth timing keeps bin-provided signal programs in gigaflow (inert on geometry-only CARLA
-        # bins: no states -> documented procedural fallback); footprint sweep upgrades the red-light
-        # centre-point crossing to the TerraZero swept-path rule; the dwell range samples per-sign
-        # hold-below-speed times ([0,0] = legacy single-tick completion; RNG only draws while hi > 0);
-        # pedestrians skip the road-exit/red-light/stop-sign entries (cyclists stay enforced as vehicles).
+        # K3/K4a enforcement knobs: the defaults carry the TerraZero enforcement semantics
+        # (K4a flip). truth timing keeps bin-provided signal programs in gigaflow (kept off by
+        # default: ODD-fidelity replay scenarios opt in; inert on geometry-only CARLA bins, which
+        # have no states -> documented procedural fallback); footprint sweep enforces the red light
+        # as the TerraZero full-body swept path vs the stop bar; the dwell range samples per-sign
+        # hold-below-speed times (sampling consumes env RNG while hi > 0, so a live range shifts the
+        # episode stream by design); pedestrians skip the road-exit/red-light/stop-sign entries
+        # (cyclists stay enforced as vehicles).
+        # Legacy escape hatch: traffic_light_footprint_sweep=False + stop_sign_dwell_range=(0.0, 0.0)
+        # (with truth timing off) reproduces the pre-K4a episode stream bit-for-bit.
+        # [0.5, 1.5] s dwell is a first calibration of the undisclosed TerraZero distribution; must be
+        # recalibrated once experiment data arrives.
         traffic_light_truth_timing=False,
-        traffic_light_footprint_sweep=False,
-        stop_sign_dwell_range=(0.0, 0.0),
+        traffic_light_footprint_sweep=True,
+        stop_sign_dwell_range=(0.5, 1.5),
         pedestrian_traffic_exempt=True,
     ):
         self.dt = dt

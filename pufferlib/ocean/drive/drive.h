@@ -357,17 +357,20 @@ struct Drive {
     int traffic_lights_enabled;
     int stop_signs_enabled;
     int yield_signs_enabled;
-    // K3 enforcement knobs (opt-in; all-defaults leave the episode stream bit-identical to legacy):
+    // K3 enforcement knobs (K4a defaults in drive.py carry the TerraZero semantics):
     // - traffic_light_truth_timing: gigaflow keeps bin-provided states (replay semantics) instead of
     //   the procedural fill. Inert on geometry-only maps (CARLA: no bin states -> procedural fallback).
+    //   Default 0: ODD-fidelity replay scenarios opt in.
     // - traffic_light_footprint_sweep: red light = full-footprint swept path vs the stop bar
-    //   (TerraZero "swept path crosses the stop bar"); off = legacy centre-point crossing.
+    //   (TerraZero "swept path crosses the stop bar"); 0 = legacy centre-point crossing. Default 1.
     // - stop_sign_dwell_range_[lo,hi]: per-sign sampled hold-below-speed dwell in seconds; [0,0]
-    //   = legacy single-tick completion. Sampling draws RNG only while hi > 0.
+    //   = legacy single-tick completion. Sampling draws RNG only while hi > 0. Default [0.5,1.5]
+    //   (first calibration; must be re-calibrated with experiment data).
     // - pedestrian_traffic_exempt: pedestrians skip the red-light/stop-sign/road-exit entries
     //   (TerraZero per-class rule; cyclists stay enforced as vehicles). Default 1: no active
     //   PEDESTRIAN exists today (K2 jaywalkers are static slots, metric-free), so this is inert
     //   until the sim-agent line fields active pedestrians.
+    // Legacy escape hatch: pin sweep 0 + dwell [0,0] (truth 0) to restore the pre-K4a stream.
     int traffic_light_truth_timing;
     int traffic_light_footprint_sweep;
     float stop_sign_dwell_range_lo;

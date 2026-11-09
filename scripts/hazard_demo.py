@@ -78,6 +78,10 @@ AGENT_I32_FIELDS = (
 )
 COLLISION_IDX = 0  # Agent.metrics_array[COLLISION_IDX]
 OFFROAD_IDX = 1  # Agent.metrics_array[OFFROAD_IDX]
+# K4a re-anchor contract: every mode's summary must carry right-of-way violation latches
+# (constants.h RED_LIGHT_IDX / STOP_SIGN_IDX), same latched-live mask as collision/offroad.
+RED_LIGHT_IDX = 2  # Agent.metrics_array[RED_LIGHT_IDX]
+STOP_SIGN_IDX = 3  # Agent.metrics_array[STOP_SIGN_IDX]
 AGENT_TYPE_VEHICLE = 1  # datatypes.h agent types
 AGENT_TYPE_PEDESTRIAN = 2
 AGENT_TYPE_CYCLIST = 3
@@ -210,8 +214,9 @@ def build_env(args, map_bin: Path, cosim_partner_slots: int = 0, hazard_cfg=None
     hazard_cfg (validated config/hazard_demo.yaml dict) maps onto the K1
     hazard_* env kwargs: placement then happens INSIDE the C reset path.
     extra_env_kwargs (optional dict) merges last, overriding defaults — the
-    K3 evidence runner passes the enforcement knob face through this hook
-    without changing any demo default.
+    K3/K4 evidence runners pass the enforcement knob face through this hook
+    (K4a: the pins below are the new TerraZero-default face; legacy evidence
+    runs pin the pre-K4a knobs explicitly through the same hook).
     """
     from pufferlib.ocean.drive.drive import Drive
 
@@ -250,7 +255,7 @@ def build_env(args, map_bin: Path, cosim_partner_slots: int = 0, hazard_cfg=None
             "hazard_walkers_speed_hi_mps": float(hazard_cfg["jaywalker"]["speed_range"][1]),
         }
 
-    return Drive(
+    env_kwargs = dict(
         map_dir=str(map_bin),  # pin a single map bin -> deterministic episode
         num_maps=1,
         allow_map_subset=False,
@@ -294,9 +299,19 @@ def build_env(args, map_bin: Path, cosim_partner_slots: int = 0, hazard_cfg=None
         obs_lane_speed_limit=True,
         cosim_partner_slots=cosim_partner_slots,
         seed=args.seed,
-        **hazard_kwargs,
-        **(extra_env_kwargs or {}),
     )
+    # K4a enforcement defaults (TerraZero semantics), pinned so the demo contract does not
+    # drift with drive.py; the pre-K4a legacy face is reproducible via extra_env_kwargs
+    # (merged below, so runner-supplied overrides win).
+    env_kwargs.update(
+        traffic_light_truth_timing=False,
+        traffic_light_footprint_sweep=True,
+        stop_sign_dwell_range=(0.5, 1.5),
+        pedestrian_traffic_exempt=True,
+    )
+    env_kwargs.update(hazard_kwargs)
+    env_kwargs.update(extra_env_kwargs or {})
+    return Drive(**env_kwargs)
 
 
 def capture_buffers(env, scenarios, extra_agent_slots: int = 0):
@@ -593,6 +608,8 @@ METRICS_ROWS = (
     ("active agents (final)", "active_final"),
     ("collision agents (latched)", "collision_agents"),
     ("offroad agents (latched)", "offroad_agents"),
+    ("red-light agents (latched)", "red_light_agents"),
+    ("stop-sign agents (latched)", "stop_sign_agents"),
     ("removed agents (final)", "removed_final"),
     ("speed min / avg / max (m/s)", "speed_summary"),
     ("mean speed final step (m/s)", "speed_final"),
@@ -1995,11 +2012,14 @@ def run_static_hazards(args, map_bin):
             gif_frames.append((step, af0.copy(), ai0.copy()))
 
     hazard_offroad = int(np.sum((ai0[:, 3] == 1) & (ai0[:, 2] == 1) & (mf0[:, OFFROAD_IDX] > 0)))
+    hazard_live = (ai0[:, 3] == 1) & (ai0[:, 2] == 1)
     hazard_metrics = {
         "steps_run": steps_run,
         "ended_step": episode_end if episode_end is not None else f"ran to {steps_run}",
         "collision_agents_final": int(collision_curve[-1]) if collision_curve else 0,
         "offroad_agents_final": hazard_offroad,
+        "red_light_agents_final": int(np.sum(hazard_live & (mf0[:, RED_LIGHT_IDX] > 0))),
+        "stop_sign_agents_final": int(np.sum(hazard_live & (mf0[:, STOP_SIGN_IDX] > 0))),
     }
     env.close()
 
@@ -2058,11 +2078,14 @@ def run_static_hazards(args, map_bin):
         if step in COMPARE_KEYFRAMES:
             render_keyframes_b(step)
     baseline_offroad = int(np.sum((abi[:, 3] == 1) & (abi[:, 2] == 1) & (amf[:, OFFROAD_IDX] > 0)))
+    baseline_live = (abi[:, 3] == 1) & (abi[:, 2] == 1)
     baseline_metrics = {
         "steps_run": len(baseline_curve),
         "ended_step": baseline_end if baseline_end is not None else f"ran to {len(baseline_curve)}",
         "collision_agents_final": int(baseline_curve[-1]) if baseline_curve else 0,
         "offroad_agents_final": baseline_offroad,
+        "red_light_agents_final": int(np.sum(baseline_live & (amf[:, RED_LIGHT_IDX] > 0))),
+        "stop_sign_agents_final": int(np.sum(baseline_live & (amf[:, STOP_SIGN_IDX] > 0))),
     }
     env_b.close()
 
@@ -3041,6 +3064,10 @@ def run_jaywalker(args, map_bin):
         "ended_step": episode_end if episode_end is not None else f"ran to {steps_run}",
         "collision_agents_final": int(np.sum((ai0[:, 3] == 1) & (ai0[:, 2] == 1)
                                              & (mf0[:, COLLISION_IDX] > 0))),
+        "red_light_agents_final": int(np.sum((ai0[:, 3] == 1) & (ai0[:, 2] == 1)
+                                             & (mf0[:, RED_LIGHT_IDX] > 0))),
+        "stop_sign_agents_final": int(np.sum((ai0[:, 3] == 1) & (ai0[:, 2] == 1)
+                                             & (mf0[:, STOP_SIGN_IDX] > 0))),
     }
     env.close()
 
@@ -3116,6 +3143,10 @@ def run_jaywalker(args, map_bin):
         "ended_step": baseline_end if baseline_end is not None else f"ran to {len(per_step_b) - 1}",
         "collision_agents_final": int(np.sum((abi[:, 3] == 1) & (abi[:, 2] == 1)
                                              & (amf[:, COLLISION_IDX] > 0))),
+        "red_light_agents_final": int(np.sum((abi[:, 3] == 1) & (abi[:, 2] == 1)
+                                             & (amf[:, RED_LIGHT_IDX] > 0))),
+        "stop_sign_agents_final": int(np.sum((abi[:, 3] == 1) & (abi[:, 2] == 1)
+                                             & (amf[:, STOP_SIGN_IDX] > 0))),
     }
     env_b.close()
 
@@ -3849,6 +3880,10 @@ def run_mix(args, map_bin, cfg):
         "ended_step": episode_end if episode_end is not None else f"ran to {steps_run}",
         "collision_agents_final": int(collision_curve[-1]) if collision_curve else 0,
         "offroad_agents_final": mix_offroad,
+        "red_light_agents_final": int(np.sum((ai0[:, 3] == 1) & (ai0[:, 2] == 1)
+                                             & (mf0[:, RED_LIGHT_IDX] > 0))),
+        "stop_sign_agents_final": int(np.sum((ai0[:, 3] == 1) & (ai0[:, 2] == 1)
+                                             & (mf0[:, STOP_SIGN_IDX] > 0))),
     }
     env.close()
 
@@ -3925,6 +3960,10 @@ def run_mix(args, map_bin, cfg):
         "collision_agents_final": int(np.sum((abi[:, 3] == 1) & (abi[:, 2] == 1)
                                              & (amf[:, COLLISION_IDX] > 0))),
         "offroad_agents_final": baseline_offroad,
+        "red_light_agents_final": int(np.sum((abi[:, 3] == 1) & (abi[:, 2] == 1)
+                                             & (amf[:, RED_LIGHT_IDX] > 0))),
+        "stop_sign_agents_final": int(np.sum((abi[:, 3] == 1) & (abi[:, 2] == 1)
+                                             & (amf[:, STOP_SIGN_IDX] > 0))),
     }
     env_b.close()
 
@@ -4587,6 +4626,7 @@ def main():
 
     # final captured arrays (kept from the last capture_frame before close)
     per_env, total_collision, total_offroad = [], 0, 0
+    total_red_light, total_stop_sign = 0, 0
     for e in range(env.num_envs):
         ai = buffers["agent_i32"][e]
         mf = buffers["metrics_f32"][e]
@@ -4596,14 +4636,20 @@ def main():
         avg = s["speed_sum"] / s["speed_count"] if s["speed_count"] else 0.0
         collisions = int(np.sum(mask & (mf[:, COLLISION_IDX] > 0)))
         offroads = int(np.sum(mask & (mf[:, OFFROAD_IDX] > 0)))
+        red_lights = int(np.sum(mask & (mf[:, RED_LIGHT_IDX] > 0)))
+        stop_signs = int(np.sum(mask & (mf[:, STOP_SIGN_IDX] > 0)))
         total_collision += collisions
         total_offroad += offroads
+        total_red_light += red_lights
+        total_stop_sign += stop_signs
         ended = episode_end[e]
         per_env.append({
             "agents_final": int(mask.sum()),
             "active_final": int(mask.sum()),
             "collision_agents": collisions,
             "offroad_agents": offroads,
+            "red_light_agents": red_lights,
+            "stop_sign_agents": stop_signs,
             "removed_final": int(np.sum(ai[mask, 5] == 1)),
             "speed_summary": f"{s['speed_min']:.2f} / {avg:.2f} / {s['speed_max']:.2f}"
                              if s["speed_count"] else "n/a",
@@ -4647,7 +4693,8 @@ def main():
             "inactive_agent_threshold": 0.4,
         },
         "episode_end": {f"env{e}": episode_end[e] for e in range(env.num_envs)},
-        "total": {"collision_agents": total_collision, "offroad_agents": total_offroad},
+        "total": {"collision_agents": total_collision, "offroad_agents": total_offroad,
+                  "red_light_agents": total_red_light, "stop_sign_agents": total_stop_sign},
         "per_env": per_env,
         "artifacts": {
             "keyframes": {e: keyframe_paths.get(e, []) for e in sorted(keyframe_paths)},

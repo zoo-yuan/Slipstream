@@ -273,6 +273,36 @@ class DriveEnvConfig:
     traffic_lights_enabled: bool = MISSING
     stop_signs_enabled: bool = MISSING
     yield_signs_enabled: bool = MISSING
+    # K1/K2 hazard subsystem + K3/K4a enforcement knobs (TerraZero defaults); the values live in
+    # puffer_drive.yaml and map 1:1 onto Drive constructor kwargs via env_kwargs.
+    hazard_enable: bool = MISSING
+    hazard_parked_enable: bool = MISSING
+    hazard_parked_n_lo: int = _constrained_field(NONNEGATIVE_INT_CONSTRAINT)
+    hazard_parked_n_hi: int = _constrained_field(NONNEGATIVE_INT_CONSTRAINT)
+    hazard_parked_car_weight: float = _constrained_field(NONNEGATIVE_NUMBER_CONSTRAINT)
+    hazard_parked_bus_weight: float = _constrained_field(NONNEGATIVE_NUMBER_CONSTRAINT)
+    hazard_parked_truck_weight: float = _constrained_field(NONNEGATIVE_NUMBER_CONSTRAINT)
+    hazard_clusters_enable: bool = MISSING
+    hazard_clusters_n_lo: int = _constrained_field(NONNEGATIVE_INT_CONSTRAINT)
+    hazard_clusters_n_hi: int = _constrained_field(NONNEGATIVE_INT_CONSTRAINT)
+    hazard_clusters_layout: str = MISSING
+    hazard_cones_enable: bool = MISSING
+    hazard_cones_zones_lo: int = _constrained_field(NONNEGATIVE_INT_CONSTRAINT)
+    hazard_cones_zones_hi: int = _constrained_field(NONNEGATIVE_INT_CONSTRAINT)
+    hazard_cones_taper_cones: int = _constrained_field(NONNEGATIVE_INT_CONSTRAINT)
+    hazard_cones_block_rows: int = _constrained_field(NONNEGATIVE_INT_CONSTRAINT)
+    hazard_cones_block_cols: int = _constrained_field(NONNEGATIVE_INT_CONSTRAINT)
+    hazard_cones_spacing_m: float = _constrained_field(POSITIVE_NUMBER_CONSTRAINT)
+    hazard_cones_taper_prob: float = _constrained_field(PROBABILITY_CONSTRAINT)
+    hazard_walkers_enable: bool = MISSING
+    hazard_walkers_n_lo: int = _constrained_field(NONNEGATIVE_INT_CONSTRAINT)
+    hazard_walkers_n_hi: int = _constrained_field(NONNEGATIVE_INT_CONSTRAINT)
+    hazard_walkers_speed_lo_mps: float = _constrained_field(POSITIVE_NUMBER_CONSTRAINT)
+    hazard_walkers_speed_hi_mps: float = _constrained_field(POSITIVE_NUMBER_CONSTRAINT)
+    traffic_light_truth_timing: bool = MISSING
+    traffic_light_footprint_sweep: bool = MISSING
+    stop_sign_dwell_range: list[float] = MISSING
+    pedestrian_traffic_exempt: bool = MISSING
     use_map_cache: bool = MISSING
     preload_map_cache: bool = MISSING
     use_neighbor_cache: bool = MISSING
@@ -622,6 +652,59 @@ def _validate_cross_field_constraints(config, context):
         _raise_config_error(context, "env.partner_blindness_prob_min", "must not exceed env.partner_blindness_prob")
     if env["preload_map_cache"] and not env["use_map_cache"]:
         _raise_config_error(context, "env.preload_map_cache", "requires env.use_map_cache to be true")
+
+    # --- K1/K2 hazard subsystem + K3/K4a enforcement knobs: mirror the kernel's fail-fast
+    # rules so malformed hazard configuration dies at load, not at first env construction.
+    if env["hazard_enable"] and env["simulation_mode"] != "gigaflow":
+        _raise_config_error(context, "env.hazard_enable", "requires env.simulation_mode to be gigaflow")
+    dwell = env["stop_sign_dwell_range"]
+    if (
+        not isinstance(dwell, list)
+        or len(dwell) != 2
+        or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in dwell)
+        or dwell[0] < 0.0
+        or dwell[0] > dwell[1]
+    ):
+        _raise_config_error(context, "env.stop_sign_dwell_range", "must satisfy 0 <= lo <= hi (finite seconds)")
+    if env["hazard_enable"]:
+        weights = (env["hazard_parked_car_weight"], env["hazard_parked_bus_weight"], env["hazard_parked_truck_weight"])
+        if not sum(weights) > 1e-6:
+            _raise_config_error(context, "env.hazard_parked_car_weight", "(with bus/truck weights) must sum to a positive value")
+        for lo_key, hi_key, enable_key in (
+            ("hazard_parked_n_lo", "hazard_parked_n_hi", "hazard_parked_enable"),
+            ("hazard_clusters_n_lo", "hazard_clusters_n_hi", "hazard_clusters_enable"),
+            ("hazard_cones_zones_lo", "hazard_cones_zones_hi", "hazard_cones_enable"),
+        ):
+            if env[enable_key] and env[lo_key] > env[hi_key]:
+                _raise_config_error(
+                    context,
+                    f"env.{lo_key}",
+                    f"must not exceed env.{hi_key} when env.{enable_key} is true",
+                )
+        if env["hazard_clusters_layout"] not in ("both", "rear_end", "t_bone"):
+            _raise_config_error(
+                context,
+                "env.hazard_clusters_layout",
+                "must be one of 'both', 'rear_end', 't_bone'",
+            )
+        if env["hazard_cones_enable"]:
+            if env["hazard_cones_taper_cones"] < 2:
+                _raise_config_error(context, "env.hazard_cones_taper_cones", "must be at least 2")
+            if env["hazard_cones_block_rows"] < 1:
+                _raise_config_error(context, "env.hazard_cones_block_rows", "must be at least 1")
+            if env["hazard_cones_block_cols"] < 2:
+                _raise_config_error(context, "env.hazard_cones_block_cols", "must be at least 2")
+        if env["hazard_walkers_enable"]:
+            if not (1 <= env["hazard_walkers_n_lo"] <= env["hazard_walkers_n_hi"]):
+                _raise_config_error(context, "env.hazard_walkers_n_lo", "must satisfy 1 <= lo <= hi")
+            if env["hazard_walkers_n_hi"] > 8:
+                _raise_config_error(context, "env.hazard_walkers_n_hi", "must not exceed the walker slot cap 8")
+            if env["hazard_walkers_speed_lo_mps"] > env["hazard_walkers_speed_hi_mps"]:
+                _raise_config_error(
+                    context,
+                    "env.hazard_walkers_speed_lo_mps",
+                    "must not exceed env.hazard_walkers_speed_hi_mps",
+                )
 
     if env["reward_randomization"] and not env["reward_conditioning"]:
         _raise_config_error(context, "env.reward_randomization", "requires env.reward_conditioning")

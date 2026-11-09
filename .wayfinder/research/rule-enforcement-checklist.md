@@ -13,6 +13,8 @@
 
 ## 2. 停牌 = hold-below-speed + sampled dwell —— **已具备（dwell 未采样化）**
 
+> **⚠️ 修订（2026-11-09，K3 实施）**：下文本条目实测于兄弟仓旧线（dev/zoo_v3.0@80a681b4 时代）。本仓基线 `2c1ca3e4` 已把停牌重写为 **RunStopSign2 acquisition**（drive.h:2023-2069：速度 <0.1m/s 且在 trigger box 内**单 tick 即完成**，无任何驻停时长）——对现基线，停牌既无固定 0.5s 也无 dwell，采样化机制由 K3 新建（旋钮 `stop_sign_dwell_range`，默认 [0,0]=现行为，K4 切采样范围）。
+
 - `check_stop_sign_violation`（drive.h:1642-1709）：速度阈值 `AGENT_STOPPED_SPEED_THRESHOLD = 0.2 m/s`（constants.h:310，应用于 1683-1684）；驻停计数 `stop_sign_stopped_timestep_count` 仅在车头在线前且低于阈值时累加（1680-1684, 1703-1704），要求 `STOP_SIGN_REQUIRED_STOP_DURATION_SECONDS/dt` 步（constants.h:182 = **固定 0.5 s**，1687）；前保杠越线事件时结算（`agent_front_crossed_stop_line` 1607-1639 → 1692-1694）；带 z 门（1659）与 heading 门（1651-1652）。
 - 口径差：TerraZero 是 **sampled dwell time**（按实例采样）；PufferDrive 为全局常数。
 - **工作量**：常数改 per-control 采样字段（`TrafficControlElement` 加一字段 + reset 侧采样）≈ **0.5 工程日**。

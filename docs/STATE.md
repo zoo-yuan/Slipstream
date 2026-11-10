@@ -2,7 +2,7 @@
 
 As-of: adb8dc3
 （2026-11-05 票 09 收章：评测资产就位；hazard 原型票已闭）
-约定：AGENTS.md 是放置规则权威；strata 分层（STATE / 台账）自 2026-11-03 启用；TerraZero 复刻 effort 的活图在 `.wayfinder/map.md`。
+约定：AGENTS.md 是放置规则权威；strata 分层（STATE / adr / lessons）自 2026-11-03 启用；TerraZero 复刻 effort 的活图在 `.wayfinder/map.md`（已完成，11/11 票全闭）。**裁决真值在 `docs/adr/0001-0004`**（基底/配方/执法/运行时独立）。
 
 ## Where（现状）
 
@@ -20,15 +20,12 @@ As-of: adb8dc3
 - `docs/2026-11-03-Terra系列全景与PufferDrive落地路线.md` — 自 `../PufferDrive` 仓拷入的冻结分析（五成分因果链、缺口分析、逐工作落地映射）；原仓有同源版本与 ADR 语境。
 - `.wayfinder/research/` — 四份调研产物（TerraZero 报告精读 / log→map 管线 / 可借件盘点 / 规则执法核对），随票 Resolution 索引。
 
-## Next（执行清单，2026-11-05 地图完成后移交，按优先级）
+## Next（下一步）
 
-1. **hazard 内核子系统化**：✅ **K 系列全部完成（2026-11-09）**——K1 内核静态放置；K2 脚本行人（真 PEDESTRIAN + despawn + Δz 标注热修）；K3 四执法旋钮（opt-in）；K4a 切 TerraZero 执法默认+重定锚；K4b PPO smoke 双跑（1M 步×2，RTX3060 实测 ~19.6K SPS；return -1.18→-0.81 / collision 0.11→0.04 (hazard off)、-1.15→-0.80 / 0.13→0.07 (hazard on)——学习信号成立，plateau 符合预期：progress shaping 未加，属主训项）。副产物：venv 符号链接陷阱修复、conda gcc13 工具链解决 _C 编译、K4b 证据管线可复用。
-2. **零演示 RL 主轴训练**：✅ T1 progress shaping 机制（流门 [0,0] 逐位一致）+ ✅ T2 三臂扫描（各 2.217e8 步，~65K SPS@RTX3060，face 8×128）——**T2b 定案：progress 有效且 C 臂 [2.5e-3,2.5e-2] 最强**（goals 末 10%：A 0.0101 < B 0.0112 < C 0.0118；return C 最优 -0.345；代价红灯率微升 0.0045→0.0060）。**主训配方 v1 已锁**（`eed4b55`：默认区间切 C，[0,0] 逃生门保留）；观察项：末段碰撞/违规率小幅回升（熵衰减动力学，待 hazard-on 长训观察）。产物 artifacts/t2-maintrain/（curves/summary/checkpoints 三臂全量）。
-   - 下一于：hazard-on 长训（配方 v1 + mix 面）+ 内部 18 指标评测 + 失败挖掘回放。
-3. **异质 sim-agent 线**：骑行者 bicycle 网格 + 卡车分布扩展 + per-type heads（65K 轻量线起点，WOSAC 角色）。
-4. **外部验收**：nuPlan 数据获取（license 核验）→ 仓内 cosim/nuplan 栈跑通 val14 → InterPlan 接入。
-5. **log→map 摄取**：Apollo G1-G3 几何转换器 + WOMD/nuPlan strip-agents 工具（单一中间表示 + bin writer，五源共享）。
-6. E1a/E1b：补桥三件套 G8/G9/G3 + Nova 权重（owner 侧解锁）。
+- 待 owner 点火：**hazard-on 长训**（配方 v1 + mix 面，T2 引擎直接复用）→ 内部 18 指标评测 + 失败挖掘回放。
+- 待 owner 裁决：index 生成接进 t2 收割器（20 行，使收割=全套仪表盘）。
+- 未完基建：**push 仍未落地**（远端落后本地 30+ commits；645MB 全历史首推需好上行窗口手动完成，见 lessons）。
+- 雾区候切（wayfinder 地图已完成，此处仅执行序）：异质 sim-agent 线；外部验收（nuPlan 数据 → val14 cosim → InterPlan）；log→map 摄取（Apollo G1-G3）；E1a/E1b（Nova 权重 owner 侧解锁）。
 
 ## Long-term（长期不变量）
 

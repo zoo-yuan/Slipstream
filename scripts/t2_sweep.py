@@ -25,7 +25,7 @@ trap: return the interpreter AS-IS, no .resolve()) all follow scripts/k4b_smoke.
 
 Repro (the exact detached launch used for the overnight ignition):
   cd <repo root>
-  setsid nohup env PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python \\
+  setsid nohup env PYTHONPATH=$PWD .venv/bin/python \\
       scripts/t2_sweep.py --seed 42 --arm-budget-s 7200 --total-budget-s 28800 \\
       </dev/null >> artifacts/t2-maintrain/orchestrator_console.log 2>&1 &
 
@@ -34,7 +34,7 @@ Progress view:
   tail -2 artifacts/t2-maintrain/ckpt/A_progress0/metrics.csv
 
 Harvest (T2b entry; safe to run mid-sweep, uses whatever rows exist):
-  PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/t2_sweep.py --collect-only
+  PYTHONPATH=$PWD .venv/bin/python scripts/t2_sweep.py --collect-only
 """
 
 from __future__ import annotations
@@ -74,7 +74,8 @@ ARMS: dict[str, tuple[float, float]] = {
 ARM_COLORS = {"A_progress0": "tab:blue", "B_t1default": "tab:orange", "C_scale10x": "tab:green"}
 
 INTERPRETER_CANDIDATES = [
-    REPO_ROOT.parent / "PufferDrive" / ".venv" / "bin" / "python",
+    REPO_ROOT / ".venv" / "bin" / "python",  # 本仓自行 venv（T2a 后本地化，不再依赖兄弟仓）
+    REPO_ROOT.parent / "PufferDrive" / ".venv" / "bin" / "python",  # 仅应急回退，正常不应触达
     Path(sys.executable),
 ]
 # Guard so scripts/ imports (hazard_demo provenance helpers) resolve regardless of cwd.
@@ -664,7 +665,7 @@ def view_and_harvest_block(state: dict, sizing: dict | None) -> list[str]:
         "  tail -2 artifacts/t2-maintrain/ckpt/A_progress0/metrics.csv",
         "  ps -p $(cat artifacts/t2-maintrain/state.json | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"pid\",0))') && nvidia-smi",
         "---- T2b 收割入口（全部臂 done/dead 后均可跑，用现存行收割）----",
-        "  PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/t2_sweep.py --collect-only",
+        "  PYTHONPATH=$PWD .venv/bin/python scripts/t2_sweep.py --collect-only",
         "  -> artifacts/t2-maintrain/{metrics.csv(合并), curves.png, summary.json}",
     ]
     if sizing:

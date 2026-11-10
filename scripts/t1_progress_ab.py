@@ -26,8 +26,8 @@ and --check after rebuilding: [0,0] must reproduce the pre-T1 stream bit-for-bit
 
 Repro:
   cd <repo root>
-  PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/t1_progress_ab.py --steps 1000000 --seed 42
-  PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/t1_progress_ab.py --mode stream-check --save <json>
+  PYTHONPATH=$PWD .venv/bin/python scripts/t1_progress_ab.py --steps 1000000 --seed 42
+  PYTHONPATH=$PWD .venv/bin/python scripts/t1_progress_ab.py --mode stream-check --save <json>
 
 Requires the in-repo advantage kernel (pufferlib._C) already built; the drive binding is
 rebuilt by the kernel discipline below (NO_TRAIN=1 python setup.py build_ext --inplace).
@@ -834,7 +834,7 @@ def collect(args, sizing, provenance, stream_result) -> dict:
         "NUM_REWARD_COEFS 18→19 → 观测/策略输入 +1 维（两臂同维，K4b checkpoint 不兼容属预期）",
     ]
     summary["repro_command"] = (
-        "PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/t1_progress_ab.py "
+        "PYTHONPATH=$PWD .venv/bin/python scripts/t1_progress_ab.py "
         f"--steps {sizing['chosen_steps']} --seed {args.seed} --num-envs {args.num_envs} "
         f"--num-agents {args.num_agents} --progress-lo {args.progress_lo} --progress-hi {args.progress_hi}"
     )

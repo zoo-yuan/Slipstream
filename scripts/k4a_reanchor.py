@@ -23,7 +23,7 @@ Produces, under ``artifacts/reanchor-k4/``:
 
 The old artifact dirs are left untouched; everything lands under --out.
 
-Run: PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/k4a_reanchor.py
+Run: PYTHONPATH=$PWD .venv/bin/python scripts/k4a_reanchor.py
 """
 
 import argparse
@@ -78,7 +78,7 @@ def parse_args():
     p.add_argument("--goal-source", choices=["route", "map"], default="route")
     p.add_argument("--envs", type=int, default=2)
     p.add_argument("--agents-per-env", type=int, default=150)
-    p.add_argument("--map-dir", default="../PufferDrive/pufferlib/resources/drive/binaries/carla")
+    p.add_argument("--map-dir", default="pufferlib/resources/drive/binaries/carla")
     p.add_argument("--map", default="Town05")
     p.add_argument("--out", default="artifacts/reanchor-k4")
     p.add_argument("--skip-demo", action="store_true", help="reuse existing demo summaries, skip the runs")
@@ -298,7 +298,7 @@ def build_comparison_md(reanchor_root, summaries, legacy_result, kernel, args):
 - binding .so: `{kernel['binding_so']}`
 - .so sha256: `{kernel['binding_sha256']}`
 - git sha: `{kernel['git_sha']}` · 构建: `{kernel['built_by']}`
-- 命令: `PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/k4a_reanchor.py --seeds {','.join(map(str, SEEDS))}`
+- 命令: `PYTHONPATH=$PWD .venv/bin/python scripts/k4a_reanchor.py --seeds {','.join(map(str, SEEDS))}`
 
 ## 口径
 

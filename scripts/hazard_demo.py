@@ -29,13 +29,13 @@ captures the global agent state every step, and renders top-down artifacts:
   spec ticket. M0/M1/M2 modes keep their frozen hardcoded behavior.
 
 Usage:
-    PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py \
+    PYTHONPATH=$PWD .venv/bin/python scripts/hazard_demo.py \
         --mode baseline --seed 42
-    PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py \
+    PYTHONPATH=$PWD .venv/bin/python scripts/hazard_demo.py \
         --mode static-hazards --seed 42   # M1: parked/collided-cluster/cones
-    PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py \
+    PYTHONPATH=$PWD .venv/bin/python scripts/hazard_demo.py \
         --mode jaywalker --seed 42        # M2: python-stepped crossing + reactions
-    PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py \
+    PYTHONPATH=$PWD .venv/bin/python scripts/hazard_demo.py \
         --mode mix --seed 42              # M3: all config-enabled classes in one scene
 
 Notes (see .wayfinder/research/log-to-map-findings.md):
@@ -86,7 +86,7 @@ AGENT_TYPE_VEHICLE = 1  # datatypes.h agent types
 AGENT_TYPE_PEDESTRIAN = 2
 AGENT_TYPE_CYCLIST = 3
 
-DEFAULT_MAP_DIR = "../PufferDrive/pufferlib/resources/drive/binaries/carla"
+DEFAULT_MAP_DIR = "pufferlib/resources/drive/binaries/carla"
 DEFAULT_MAP = "Town05"
 
 
@@ -150,7 +150,7 @@ def resolve_map_bin(map_dir: str, map: str) -> Path:
 
 # --- kernel provenance (in-repo kernel pinning) ------------------------------
 # The demos borrow only the sibling-repo interpreter (PYTHONPATH=$PWD
-# ../PufferDrive/.venv/bin/python); pufferlib and the drive binding .so must
+# .venv/bin/python); pufferlib and the drive binding .so must
 # come from THIS repo. Early artifacts ran on the sibling venv's old-kernel
 # binary (135-step truncation / 78 collisions seed42); the pinned in-repo
 # build runs the full 200 steps / 31 collisions. verify_in_repo_kernel()
@@ -618,7 +618,7 @@ METRICS_ROWS = (
 
 
 def write_index_html(out_dir, args, map_bin, summary, keyframe_paths, gif_path):
-    cmd = "PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py --mode baseline"
+    cmd = "PYTHONPATH=$PWD .venv/bin/python scripts/hazard_demo.py --mode baseline"
     episode_note = f'steps={summary["steps_run"]}/{summary["steps_requested"]} · dt={args.dt}s'
     rows = ""
     for e, m in enumerate(summary["per_env"]):
@@ -2352,7 +2352,7 @@ def write_root_artifacts(root, seed_summaries, cjk_path=None, mode_label="static
   code {{ background: #eee; padding: 2px 6px; }}
 </style></head><body>
   <h1>M1 static hazards · parked / collided clusters / construction cones</h1>
-  <p>命令: <code>PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py --mode static-hazards --seed &lt;42|43|44&gt;</code></p>
+  <p>命令: <code>PYTHONPATH=$PWD .venv/bin/python scripts/hazard_demo.py --mode static-hazards --seed &lt;42|43|44&gt;</code></p>
   <h2>图例（legend.png 单独成图，渲染帧内无图例框）</h2>
   <img src="legend.png" width="460"/>
   <img src="counts_histogram.png" width="560"/>
@@ -3567,7 +3567,7 @@ def write_jaywalker_root(root, seed_summaries, cjk_path=None, mode_label="jaywal
   code {{ background: #eee; padding: 2px 6px; }}
 </style></head><body>
   <h1>M2 jaywalker · python-stepped 行人横穿 + 反应度量</h1>
-  <p>命令: <code>PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py --mode jaywalker --seed &lt;42|43|44&gt;</code></p>
+  <p>命令: <code>PYTHONPATH=$PWD .venv/bin/python scripts/hazard_demo.py --mode jaywalker --seed &lt;42|43|44&gt;</code></p>
   <h2>图例（legend.png 单独成图，index 首项；行人=品红圆点+轨迹线）</h2>
   <img src="legend.png" width="480"/>
   <img src="reactions.png" width="680"/>
@@ -4444,7 +4444,7 @@ def write_mix_root(root, seed_summaries, cjk_path=None):
   code {{ background: #eee; padding: 2px 6px; }}
 </style></head><body>
   <h1>M3 mix · 配置驱动的全类型同场演示</h1>
-  <p>命令: <code>PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/hazard_demo.py --mode mix --seed &lt;42|43|44&gt;</code>
+  <p>命令: <code>PYTHONPATH=$PWD .venv/bin/python scripts/hazard_demo.py --mode mix --seed &lt;42|43|44&gt;</code>
      （配置: <code>{(agg['hazard_config'] or {}).get('_path', 'config/hazard_demo.yaml')}</code>）</p>
   <h2>图例（legend.png 单独成图，index 首项；仅列实际 spawn 的类别）</h2>
   <img src="legend.png" width="520"/>

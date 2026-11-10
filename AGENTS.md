@@ -16,5 +16,6 @@ Slipstream = **TerraZero 复刻主仓**。基线 = 上游 PufferDrive `3.0`（`2
 
 ## 环境
 
-- 本机网络走代理 `127.0.0.1:7980`；git 已配 repo-local `http.version=HTTP/1.1`（HTTP/2 过代理握手失败）。大包传输（fetch/push 全历史）可能超时，优先从本地兄弟仓 fetch。
+- **Python 运行时零依赖兄弟仓（2026-11-09 本地化）**：本仓自持 `.venv/`（torch 2.14.1+cu126、gymnasium 齐备）与地图 bin `pufferlib/resources/drive/binaries/carla/`；一切命令用 `.venv/bin/python`。`../PufferDrive` 仅存两种合法引用：git 上游/挖矿源（只读）与 strata 文档语境。内核构建：`NO_TRAIN=1 .venv/bin/python setup.py build_ext --inplace --force`。
+- 本机网络走代理 `127.0.0.1:7980`；git 已配 repo-local `http.version=HTTP/1.1`（HTTP/2 过代理握手失败）。大包传输（fetch/push 全历史）可能超时。
 - 工作语言：中文。

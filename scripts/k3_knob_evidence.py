@@ -27,7 +27,7 @@ Since K4a the python defaults carry the new semantics, so every config below pin
 pre-K4a legacy face explicitly (LEGACY_KNOBS) and layers one knob on top — the table stays
 a knob-isolation comparison regardless of drive.py defaults.
 
-Run: PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/k3_knob_evidence.py --seed 42
+Run: PYTHONPATH=$PWD .venv/bin/python scripts/k3_knob_evidence.py --seed 42
 """
 
 import argparse
@@ -85,7 +85,7 @@ def parse_args():
     p.add_argument("--goal-source", choices=["route", "map"], default="route")
     p.add_argument("--envs", type=int, default=1)
     p.add_argument("--agents-per-env", type=int, default=150)
-    p.add_argument("--map-dir", default="../PufferDrive/pufferlib/resources/drive/binaries/carla")
+    p.add_argument("--map-dir", default="pufferlib/resources/drive/binaries/carla")
     p.add_argument("--map", default="Town05")
     p.add_argument("--out", default="artifacts/k3-patches/evidence")
     return p.parse_args()
@@ -261,7 +261,7 @@ def main():
 
     summary = {
         "kernel": hd.kernel_provenance(),
-        "command": f"PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/k3_knob_evidence.py "
+        "command": f"PYTHONPATH=$PWD .venv/bin/python scripts/k3_knob_evidence.py "
                    f"--seed {args.seed} --steps {args.steps} --dt {args.dt} --map {args.map}",
         "map": str(map_bin),
         "seed": args.seed,

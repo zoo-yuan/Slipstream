@@ -20,7 +20,7 @@ crash still leaves partial data.
 
 Repro:
   cd <repo root>
-  PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/k4b_smoke.py --steps 1000000 --seed 42
+  PYTHONPATH=$PWD .venv/bin/python scripts/k4b_smoke.py --steps 1000000 --seed 42
 
 Requires pufferlib._C (advantage kernel) built in-repo:
   NO_OCEAN=1 CC=<conda gcc13> CXX=<conda g++13> python setup.py build_torch --inplace --force
@@ -45,7 +45,8 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ART_DIR = REPO_ROOT / "artifacts" / "k4b-smoke"
 INTERPRETER_CANDIDATES = [
-    REPO_ROOT.parent / "PufferDrive" / ".venv" / "bin" / "python",
+    REPO_ROOT / ".venv" / "bin" / "python",  # 本仓自持 venv（本地化后首选）
+    REPO_ROOT.parent / "PufferDrive" / ".venv" / "bin" / "python",  # 仅应急回退
     Path(sys.executable),
 ]
 RUN_MODES = ("hazard_off", "hazard_on")
@@ -676,7 +677,7 @@ def collect(args, probe_result, sizing, provenance) -> dict:
         "hazard_on 的 slot budget = planned-count highs（kernel fail-fast 校验）",
     ]
     summary["repro_command"] = (
-        "PYTHONPATH=$PWD ../PufferDrive/.venv/bin/python scripts/k4b_smoke.py "
+        "PYTHONPATH=$PWD .venv/bin/python scripts/k4b_smoke.py "
         f"--steps {sizing['chosen_steps']} --seed {args.seed} --num-envs {args.num_envs} --num-agents {args.num_agents}"
     )
     (ART_DIR / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))

@@ -1,6 +1,6 @@
 # STATE
 
-As-of: adb8dc3
+As-of: f34dcc9（纯文档会话：蒸馏落层）
 （2026-11-05 票 09 收章：评测资产就位；hazard 原型票已闭）
 约定：AGENTS.md 是放置规则权威；strata 分层（STATE / adr / lessons）自 2026-11-03 启用；TerraZero 复刻 effort 的活图在 `.wayfinder/map.md`（已完成，11/11 票全闭）。**裁决真值在 `docs/adr/0001-0004`**（基底/配方/执法/运行时独立）。
 

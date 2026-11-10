@@ -843,7 +843,8 @@ def collect(args) -> None:
         "num_goals_reached": "num_goals_reached", "violations": "violations (red -, stop - -)",
         "sps": "SPS", "losses": "losses (policy -, value - -, entropy :)",
     }
-    for ax, title in titles.items():
+    for key, title in titles.items():
+        ax = axes[key]
         ax.set_title(title, fontsize=10)
         ax.set_xlabel("agent steps", fontsize=8)
         ax.grid(alpha=0.3)

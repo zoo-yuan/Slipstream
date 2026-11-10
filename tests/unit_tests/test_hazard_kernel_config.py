@@ -197,11 +197,11 @@ class TestRouteProgressShaping(unittest.TestCase):
 
     def test_default_interval_is_calibrated_on_face_and_reaches_binding(self):
         env = Drive(config_only=True)
-        self.assertEqual(env.reward_progress_lo, 2.5e-4)
-        self.assertEqual(env.reward_progress_hi, 2.5e-3)
+        self.assertEqual(env.reward_progress_lo, 2.5e-3)
+        self.assertEqual(env.reward_progress_hi, 2.5e-2)
         kwargs = env._env_init_kwargs(map_file="x.bin", max_agents=32)
-        self.assertEqual(kwargs["reward_progress_lo"], 2.5e-4)
-        self.assertEqual(kwargs["reward_progress_hi"], 2.5e-3)
+        self.assertEqual(kwargs["reward_progress_lo"], 2.5e-3)
+        self.assertEqual(kwargs["reward_progress_hi"], 2.5e-2)
 
     def test_escape_hatch_zero_interval_passes_through(self):
         env = Drive(config_only=True, reward_progress_lo=0.0, reward_progress_hi=0.0)

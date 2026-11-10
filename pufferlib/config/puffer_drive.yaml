@@ -236,8 +236,8 @@ env:
   # T1 route-progress shaping coef sampling interval (per-agent ~ U(lo, hi)); [0, 0] = escape
   # hatch, keeps the pre-T1 reward stream bit-identical. Default interval is calibrated so the
   # per-step reward stays <= 5e-4 = 2x the velocity anchor (signal/step <= v_max*dt/ref = 0.2).
-  reward_progress_lo: 2.5e-04
-  reward_progress_hi: 2.5e-03
+  reward_progress_lo: 2.5e-03  # T2b recipe v1 (C arm)
+  reward_progress_hi: 2.5e-02
   # m/s above the lane limit before the overspeed penalty fires
   overspeed_tolerance_mps: 0.0
   reward_ade: 0.0

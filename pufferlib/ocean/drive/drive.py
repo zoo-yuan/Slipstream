@@ -37,8 +37,8 @@ class Drive(pufferlib.PufferEnv):
         # T1 route-progress shaping coef sampling interval (per-agent ~ U(lo, hi)).
         # Default = calibrated positive interval, i.e. the term is ON by default;
         # pass [0, 0] to disable it and keep the pre-T1 reward stream bit-identical.
-        reward_progress_lo=2.5e-4,
-        reward_progress_hi=2.5e-3,
+        reward_progress_lo=2.5e-3,  # T2b recipe v1: C-arm [2.5e-3,2.5e-2] wins on goals/return at 2.2e8 steps
+        reward_progress_hi=2.5e-2,
         overspeed_tolerance_mps=0.0,
         reward_ade=0.0,
         min_goal_spacing=20.0,

@@ -128,8 +128,11 @@ MIN_ARM_EPOCHS = 10
 ARMS: dict[str, dict[str, float]] = {
     "A_v1ctl": {},
     "B_proghalf": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2},
+    # C = B + offroad 采样区间钉 [3,3]（内核 T6 旋钮，对齐 eval 权重；需新 .so， --allow-kernel-drift 过门）
+    "C_prog_off3": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2,
+                     "reward_offroad_lo": 3.0, "reward_offroad_hi": 3.0},
 }
-ARM_COLORS = {"A_v1ctl": "tab:blue", "B_proghalf": "tab:orange"}
+ARM_COLORS = {"A_v1ctl": "tab:blue", "B_proghalf": "tab:orange", "C_prog_off3": "tab:red"}
 
 # progress 未覆盖臂沿用的 config 默认 v1 区间（puffer_drive.yaml 现值，逐字喂 env）。
 PROGRESS_LO_DEFAULT = 2.5e-3

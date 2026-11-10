@@ -330,6 +330,8 @@ struct Drive {
     float reward_overspeed;
     float reward_progress_lo; // T1 route-progress shaping coef sampling interval; [0, 0] disables the term (escape hatch)
     float reward_progress_hi;
+    float reward_offroad_lo; // T6 offroad coef randomization sampling interval; default [0, 3] = legacy static U(0, 3) stream
+    float reward_offroad_hi;
     float overspeed_tolerance_mps;
     float reward_ade;
     int reward_conditioning;
@@ -2726,6 +2728,14 @@ static void generate_reward_coefs(Drive *env, Agent *agent) {
         const RewardBound *bounds = env->reward_log_sampling ? REWARD_BOUNDS_LOG : REWARD_BOUNDS;
         for (int i = 0; i < (int) (sizeof(random_coefs) / sizeof(random_coefs[0])); i++) {
             int c = random_coefs[i];
+            if (c == REWARD_COEF_OFFROAD) {
+                // T6 offroad interval knob: sampled from the env-level [lo, hi] interval instead of
+                // the static REWARD_BOUNDS entry. The draw stays in the loop slot and unconditional,
+                // so draw count and order are unchanged and the default [0, 3] interval reproduces
+                // the legacy U(0, 3) stream bit-for-bit.
+                agent->reward_coefs[c] = sample_uniform(&env->rng_state, env->reward_offroad_lo, env->reward_offroad_hi);
+                continue;
+            }
             agent->reward_coefs[c] = bounds[c].log_scale
                 ? sample_log_uniform(&env->rng_state, bounds[c].min_val, bounds[c].max_val)
                 : sample_uniform(&env->rng_state, bounds[c].min_val, bounds[c].max_val);

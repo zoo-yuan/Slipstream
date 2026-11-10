@@ -238,6 +238,11 @@ env:
   # per-step reward stays <= 5e-4 = 2x the velocity anchor (signal/step <= v_max*dt/ref = 0.2).
   reward_progress_lo: 2.5e-03  # T2b recipe v1 (C arm)
   reward_progress_hi: 2.5e-02
+  # T6 offroad coef sampling interval for the reward_randomization branch
+  # (kernel interval knob, default = legacy U(0,3); randomization samples
+  # per-agent ~ U(lo, hi) from this interval instead of the static bounds entry).
+  reward_offroad_lo: 0.0
+  reward_offroad_hi: 3.0
   # m/s above the lane limit before the overspeed penalty fires
   overspeed_tolerance_mps: 0.0
   reward_ade: 0.0

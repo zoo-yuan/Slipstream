@@ -2019,6 +2019,13 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
         PyErr_SetString(PyExc_ValueError, "reward_progress_lo/hi must be finite with lo <= hi ([0, 0] disables the term)");
         return -1;
     }
+    env->reward_offroad_lo = (float) unpack(kwargs, "reward_offroad_lo");
+    env->reward_offroad_hi = (float) unpack(kwargs, "reward_offroad_hi");
+    if (!isfinite(env->reward_offroad_lo) || !isfinite(env->reward_offroad_hi)
+        || env->reward_offroad_lo > env->reward_offroad_hi) {
+        PyErr_SetString(PyExc_ValueError, "reward_offroad_lo/hi must be finite with lo <= hi (default [0, 3] = legacy U(0, 3))");
+        return -1;
+    }
     env->overspeed_tolerance_mps = (float) unpack(kwargs, "overspeed_tolerance_mps");
     if (!(env->overspeed_tolerance_mps >= 0.0f) || !isfinite(env->overspeed_tolerance_mps)) {
         PyErr_SetString(PyExc_ValueError, "overspeed_tolerance_mps must be finite and >= 0");

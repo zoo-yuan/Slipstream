@@ -39,6 +39,11 @@ class Drive(pufferlib.PufferEnv):
         # pass [0, 0] to disable it and keep the pre-T1 reward stream bit-identical.
         reward_progress_lo=2.5e-3,  # T2b recipe v1: C-arm [2.5e-3,2.5e-2] wins on goals/return at 2.2e8 steps
         reward_progress_hi=2.5e-2,
+        # T6 offroad coef sampling interval for the reward_randomization branch
+        # (per-agent ~ U(lo, hi)); default = legacy static U(0, 3), draws stay
+        # unconditional so the RNG stream shape never changes.
+        reward_offroad_lo=0.0,
+        reward_offroad_hi=3.0,
         overspeed_tolerance_mps=0.0,
         reward_ade=0.0,
         min_goal_spacing=20.0,
@@ -279,6 +284,17 @@ class Drive(pufferlib.PufferEnv):
             raise ValueError(
                 f"reward_progress_lo/hi must be finite with lo <= hi ([0, 0] disables the term), "
                 f"got {reward_progress_lo}, {reward_progress_hi}"
+            )
+        self.reward_offroad_lo = float(reward_offroad_lo)
+        self.reward_offroad_hi = float(reward_offroad_hi)
+        if (
+            not np.isfinite(self.reward_offroad_lo)
+            or not np.isfinite(self.reward_offroad_hi)
+            or self.reward_offroad_lo > self.reward_offroad_hi
+        ):
+            raise ValueError(
+                f"reward_offroad_lo/hi must be finite with lo <= hi (default [0, 3] = legacy U(0, 3)), "
+                f"got {reward_offroad_lo}, {reward_offroad_hi}"
             )
         self.overspeed_tolerance_mps = float(overspeed_tolerance_mps)
         if not (self.overspeed_tolerance_mps >= 0.0) or not np.isfinite(self.overspeed_tolerance_mps):
@@ -719,6 +735,8 @@ class Drive(pufferlib.PufferEnv):
             "reward_overspeed": self.reward_overspeed,
             "reward_progress_lo": self.reward_progress_lo,
             "reward_progress_hi": self.reward_progress_hi,
+            "reward_offroad_lo": self.reward_offroad_lo,
+            "reward_offroad_hi": self.reward_offroad_hi,
             "overspeed_tolerance_mps": self.overspeed_tolerance_mps,
             "reward_ade": self.reward_ade,
             "collision_behavior": self.collision_behavior,

@@ -771,7 +771,9 @@ def main() -> None:
         probe_result = json.loads(prev.read_text())["probe"]
         log(f"probe reused from previous summary: {json.dumps(probe_result)}")
     else:
+        owner_target_steps = args.steps
         probe_result = probe(args)
+        args.steps = owner_target_steps  # probe() lifts args.steps to the 2-epoch floor; restore the owner target so sizing honors it
     sizing = size_runs(args, probe_result)
     args.steps = sizing["chosen_steps"]
 

@@ -35,12 +35,15 @@ Progress view:
 
 Harvest (T2b entry; safe to run mid-sweep, uses whatever rows exist):
   PYTHONPATH=$PWD .venv/bin/python scripts/t2_sweep.py --collect-only
+  -> artifacts/t2-maintrain/{metrics.csv(合并), curves.png, summary.json, index.html};
+  index.html is rebuilt from live data on every harvest (「本页由收割器重建」).
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import html
 import json
 import os
 import shutil
@@ -59,6 +62,15 @@ PROBE_DIR = ART_DIR / "probe"
 STATE_PATH = ART_DIR / "state.json"
 DECISION_PATH = ART_DIR / "decision.json"
 ORCH_LOG = ART_DIR / "orchestrator.log"
+
+# Page repro block (render_index): the docstring's detached launch + harvest command,
+# one line each, so index.html and this file stay in sync.
+DETACHED_LAUNCH = (
+    "setsid nohup env PYTHONPATH=$PWD .venv/bin/python scripts/t2_sweep.py "
+    "--seed 42 --arm-budget-s 7200 --total-budget-s 28800 "
+    "</dev/null >> artifacts/t2-maintrain/orchestrator_console.log 2>&1 &"
+)
+HARVEST_CMD = "PYTHONPATH=$PWD .venv/bin/python scripts/t2_sweep.py --collect-only"
 
 # Ordered smallest -> largest; probing stops at the first unstable face (OOM risk only
 # grows with face size, so larger faces after a failure are classified unstable-by-risk).
@@ -767,6 +779,138 @@ def seg_stats(rows: list[dict]) -> dict:
     }
 
 
+def _sci(x: float) -> str:
+    """Compact scientific form, manual-page style: 221773824 -> '2.218e8' (plain .3g
+    would print 2.22e+08 and drop the 4th digit the frozen manual page shows)."""
+    mant, exp = f"{x:.3e}".split("e")
+    return f"{mant}e{int(exp)}"
+
+
+def _coef(x: float) -> str:
+    """ARMS coefficient display: 0 -> '0', 2.5e-4 -> '2.5e-4'."""
+    if x == 0:
+        return "0"
+    mant, exp = f"{x:.1e}".split("e")
+    return f"{mant}e{int(exp)}"
+
+
+def _fmt4(v: float | None) -> str:
+    return "—" if v is None else f"{v:.4f}"
+
+
+def _window_mean(rows: list[dict], key: str) -> float | None:
+    vals = [r[key] for r in rows if r.get(key) is not None]
+    return float(np.mean(vals)) if vals else None
+
+
+def _mid_last_windows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Manual-page window semantics (digits frozen in index.manual.html): mid =
+    rows[int(0.45n):int(0.55n)] -- exclusive end reproduces the manual page
+    digit-for-digit (a +1 here shifts 7 cells by 1e-4; owner ruling 2026-11-10),
+    last = rows[int(0.90n):]. Tiny-n guard: mid = first half, last = final
+    min(3, n) rows, both never empty."""
+    n = len(rows)
+    mid = rows[int(0.45 * n):int(0.55 * n)]
+    last = rows[int(0.90 * n):]
+    if not mid or not last:
+        mid = rows[:max(1, n // 2)]
+        last = rows[-min(3, n):]
+    return mid, last
+
+
+_INDEX_CSS = """body{font-family:'Noto Sans CJK SC',sans-serif;margin:24px;background:#fafafa;color:#222;max-width:1280px}
+h1{font-size:22px} h2{font-size:17px;margin-top:28px;border-left:4px solid #2b6cb0;padding-left:8px}
+table{border-collapse:collapse;font-size:13px;margin:10px 0}
+th,td{border:1px solid #ccc;padding:5px 9px;text-align:right}
+th{background:#e8eef7} td:first-child,th:first-child{text-align:left}
+.s{font-weight:400;font-size:10px;color:#777}
+img{max-width:100%;border:1px solid #ddd;background:#fff}
+.box{background:#fff;border:1px solid #ddd;padding:10px 14px;font-size:13px;margin:8px 0}
+.win{background:#eafbea;border-color:#9ad89a} code{background:#eee;padding:1px 5px;font-size:12px}"""
+
+# Quant-table metric columns in display order; labels match the frozen manual page.
+_INDEX_METRICS = [
+    ("episode_return", "return"),
+    ("collision_rate", "碰撞率"),
+    ("num_goals_reached", "goals/agent"),
+    ("offroad_rate", "出路率"),
+    ("red_light_violation_rate", "红灯违规"),
+    ("stop_sign_violation_rate", "停牌违规"),
+]
+
+
+def render_index(runs: dict[str, list[dict]], state: dict, provenance: dict) -> None:
+    """Rebuild ART_DIR/'index.html' (utf-8) from live runs/state/provenance -- the page
+    itself promises 「本页由收割器重建」. CSS/structure mirror the hand-written page
+    (index.manual.html); table windows + 4-decimal rounding reproduce it digit-for-digit."""
+    sizing = state.get("sizing") or {}
+    face = str(sizing.get("face", "?"))
+    parts = face.split("x")
+    face_txt = f"{parts[0]} env × {parts[1]} agents" if len(parts) == 2 else face
+    steps_txt = _sci(sizing["steps_per_arm"]) if sizing.get("steps_per_arm") is not None else "?"
+    sps = sizing.get("sps_used")
+    sps_txt = f"~{sps / 1000:.0f}K SPS/臂" if sps else "SPS n/a"
+
+    best_arm, best_val = None, None
+    for arm, rows in runs.items():
+        _, last = _mid_last_windows(rows)
+        v = _window_mean(last, "episode_return")
+        if v is not None and (best_val is None or v > best_val):
+            best_arm, best_val = arm, v
+
+    trs = []
+    for arm, rows in runs.items():
+        mid, last = _mid_last_windows(rows)
+        lo, hi = ARMS[arm]
+        cells = "".join(
+            f"<td>{_fmt4(_window_mean(mid, key))} → <b>{_fmt4(_window_mean(last, key))}</b></td>"
+            for key, _ in _INDEX_METRICS
+        )
+        trs.append(
+            f"<tr><td>{arm} · [{_coef(lo)}, {_coef(hi)}]</td>"
+            f"<td>{_sci(rows[-1]['step'])}</td>{cells}</tr>"
+        )
+
+    ths = "<th>臂</th><th>步数</th>" + "".join(
+        f"<th>{label}<br><span class='s'>中段 → 末10%</span></th>" for _, label in _INDEX_METRICS
+    )
+    trs_html = "".join(trs)
+    region = best_arm.split("_")[0] if best_arm else "?"
+    best_txt = f"{best_arm}（last 窗 episode_return {best_val:.4f}）" if best_arm else "n/a"
+    prov_box = (
+        f"pufferlib: <code>{html.escape(str(provenance.get('pufferlib_path', '?')))}</code><br>"
+        f"binding .so sha256: <code>{str(provenance.get('binding_sha256', '?'))[:16]}…</code> · "
+        f"_C sha256: <code>{str(provenance.get('advantage_sha256', '?'))[:16]}…</code><br>"
+        f"torch {provenance.get('torch', '?')} · {provenance.get('gpu', '?')} · "
+        f"git {str(provenance.get('git_sha', '?'))[:9]} · 构建 <code>{html.escape(str(provenance.get('built_by', '?')))}</code>"
+    )
+    page = f"""<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
+<title>T2 主训三臂扫描 · progress 系数定案</title>
+<style>
+{_INDEX_CSS}
+</style></head><body>
+<h1>T2 主训三臂扫描：route progress shaping 系数定案</h1>
+<div class="box">face: {face_txt} · batch {sizing.get("batch", "?")} · 每臂 {steps_txt} 步（{sizing.get("epochs_per_arm", "?")} epochs）· seed 42 · hazard off · {provenance.get("gpu", "?")} · 实测 {sps_txt}<br>
+<b style="color:#2f855a">判读：最优臂 {best_txt} → 主训配方 v1 = {region} 区间（commit eed4b55，[0,0] 逃生门保留）</b></div>
+
+<h2>学习曲线（三臂同轴）</h2>
+<img src="curves.png" alt="T2 curves">
+<div class="s">上：episode return（每 epoch）；中：碰撞/出路率与 goals；SPS 与 losses。滑动窗口平滑。</div>
+
+<h2>量化对照（中段 45–55% → 末 10% 窗口均值）</h2>
+<table><tr>{ths}</tr>{trs_html}</table>
+
+<h2>复现</h2>
+<div class="box"><code>{html.escape(DETACHED_LAUNCH)}</code><br>
+收割：<code>{HARVEST_CMD}</code>（本页由收割器重建）</div>
+
+<h2>内核溯源</h2>
+<div class="box">{prov_box}</div>
+<div class="s">数字可由 metrics.csv 复算；本页由 --collect-only 自动重建。</div>
+</body></html>"""
+    (ART_DIR / "index.html").write_text(page, encoding="utf-8")
+
+
 def collect(args) -> None:
     """T2b harvest entry: merged metrics + 3-arm curves + summary from whatever rows
     exist (safe mid-sweep). Reuses state.json for face/sizing/kernel provenance."""
@@ -872,7 +1016,8 @@ def collect(args) -> None:
                       for k in first if k != "epochs"},
         }
     (ART_DIR / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
-    log(f"collect done: {merged.name}, curves.png, summary.json under {ART_DIR}")
+    render_index(runs, state, provenance)
+    log(f"collect done: {merged.name}, curves.png, summary.json, index.html under {ART_DIR}")
 
 
 # --------------------------------------------------------------------- main ---

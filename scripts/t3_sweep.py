@@ -137,7 +137,7 @@ ARMS: dict[str, dict[str, float]] = {
     "H_ent_anneal": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2,
                       "train.ent_coef": 0.02, "train.ent_coef_anneal": True, "train.ent_coef_final": 0.005},
 }
-ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:magenta", "H_ent_anneal": "tab:olive"}
+ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:purple", "H_ent_anneal": "tab:olive"}
 
 # progress 未覆盖臂沿用的 config 默认 v1 区间（puffer_drive.yaml 现值，逐字喂 env）。
 PROGRESS_LO_DEFAULT = 2.5e-3

@@ -18,3 +18,7 @@
 - **harness 自动 worktree 的分支名派生会被任务书里的 `../` 路径污染成非法 ref**：手工 `git worktree add -b <合法名>` + 子代理 cwd 指定是稳妥替代。
 - **热路径 diff 测试不要以 HEAD 为基线**（提交后 diff 清空 → 断言 missing 全挂）：钉 pre-knob 基线 commit + 姊妹旋钮标记豁免（tests/test_reward_{offroad,collision}_knob.py 现行写法）。
 - **管道 `pytest | tail` 吃掉 rc**：测试门必须显式 `${PIPESTATUS[0]}` 或分开执行，否则失败仍会走 commit 链（T7 集成踩中）。
+- **双机并行的子进程参数必须显式透传**（--art-dir 子进程陷阱 ×1、--only-arm 只过滤了汇总循环 ×1）：fork 引擎加 CLI 开关时，spawn 命令构造与训练循环/汇总循环三处都要接线，自测要覆盖「子进程产物落点」。
+- **多核机会让评测 worker 数爆炸**（192 env worker 全在 CPU 打转、GPU 全闲 90 分钟）：vec worker 数 = min(hw_threads, scenarios, **32**)；慢 ≠ 挂，先 pgrep 看进程在干嘛。
+- **LAN 直灌 site-packages 是最快的跨机建环境法**（8.9G/3 分钟替代慢链路 torch 下载）：venv 壳用 uv venv 重建（路径烧死不可搬），site-packages 纯数据可直拷；manylinux 轮子跨 Ubuntu 版本可用。
+- **`pkill -f` 自匹配第三次**（远程 ssh 命令串含模式即自杀）：一律 `[x]x` 括号技巧或按 PID。

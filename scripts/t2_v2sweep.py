@@ -134,8 +134,12 @@ ARMS: dict[str, dict[str, float]] = {
     # D = B + offroad 区间 [1.5,3]（膝点探臂：钉 3.0 过保守 dnf 0.54，放宽下限找 return/dnf 同时优于 C 的膝点）
     "D_knee": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2,
                 "reward_offroad_lo": 1.5, "reward_offroad_hi": 3.0},
+    # E = C 配方 + collision 钉 [3,3]（T7 旋钮）：关掉最后一个便宜出口（「宁撞不出路」，训练面碰撞钉 0.31）
+    "E_coll3": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2,
+                 "reward_offroad_lo": 3.0, "reward_offroad_hi": 3.0,
+                 "reward_collision_lo": 3.0, "reward_collision_hi": 3.0},
 }
-ARM_COLORS = {"A_v1ctl": "tab:blue", "B_proghalf": "tab:orange", "C_prog_off3": "tab:red", "D_knee": "tab:purple"}
+ARM_COLORS = {"A_v1ctl": "tab:blue", "B_proghalf": "tab:orange", "C_prog_off3": "tab:red", "D_knee": "tab:purple", "E_coll3": "tab:brown"}
 
 # progress 未覆盖臂沿用的 config 默认 v1 区间（puffer_drive.yaml 现值，逐字喂 env）。
 PROGRESS_LO_DEFAULT = 2.5e-3

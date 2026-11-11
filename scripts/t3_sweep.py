@@ -532,6 +532,8 @@ def spawn_worker(name: str, args, stdout_path: Path) -> tuple[int, float]:
         "--num-agents",
         str(args.num_agents),
     ]
+    if getattr(args, "art_dir", None):
+        cmd += ["--art-dir", str(args.art_dir)]  # 子进程必须落同一产物树（默认目录陷阱）
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     log(f"spawn worker {name} (face {args.num_envs}x{args.num_agents}, steps {args.steps}): {stdout_path.name}")

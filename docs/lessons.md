@@ -7,3 +7,9 @@
 - **碳基验收官的 2D 投影需要高程语义**（K2 热修）：顶视图重叠 ≠ 物理重叠（立交 Δz≈10m 被看成碾压）；亚米级 hazard 的放大标记 vs 真实尺寸必须双画（细框=物理、大标=可见）。渲染标准见 wayfinder 票 07 长期标准节。
 - **大 push 过本机代理不可靠**（645MB 多次僵死，SSH 443 认证正常但上传停摆）：全历史首次推送建议在好上行窗口手动完成；日常增量推送无碍。
 - **外部核对文档必须标注测量基线**（K3 停牌条目过时事件）：checklist 类文档引用别仓代码时记录其 commit，过期即修订并留修订注记。
+- **静态奖励键在 reward_randomization 下惰性**（v2 扫臂 B≡C 位级全同自证）：随机化分支由内核逐 agent 采样，env 静态键不被读。改奖励先读 generate_reward_coefs 分支；有效杠杆 = 区间旋钮（ADR-0005 谱系）。
+- **pufferl best-model 追踪退化**（score≡0 → 首个 ckpt 即 "best"）：best_models/ 不可当最优证据；模型优劣必须 eval 面跑数（scripts/t3_eval_ckpt.py）。
+- **训练曲线判读会撒谎，配方裁决以 eval 双面为准**（T3「末段退化」被 e168 vs e1682 eval 否决；早停假设作废）：训练 return 含 shaping 视角偏差，换面后符号可翻转。
+- **mix 面 8×128 显存贴边（~10.8/12GB）**：必须独占 GPU + `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`；外来进程 0.7GB 即可挤 OOM（2026-11-10 smoke 事故）。点火前查 nvidia-smi 计算进程。
+- **探针 SPS 系统性低估 ~30%**（mix 面 probe ~39K vs 全程 realized ~50K）：sizing 预算 ×1.3 校正（T3 用 6300s 得 2.2e8 同规模）。另：k4b 系 `probe()` 原地改写 `args.steps`，消费该值的逻辑必须先存后复（t2_hazsmoke 已修）。
+- **30 分钟上限条目补充**（×N，本次 worker E 再中）：「每子步骤落盘」恢复模式经受住考验——超时后 supervisor 10 分钟接手收尾（读进度文件 + 清产物 + 补报告），无返工。

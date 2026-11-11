@@ -142,8 +142,16 @@ ARMS: dict[str, dict[str, float]] = {
     "J_ent4": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.04},
     # K = velocity 剂量上探（6×）：与 I(3×)、B 基线(1×) 括出速度侧剂量响应
     "K_vel6": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "reward_velocity": 0.30},
+    # 轮 3 组合假设：高熵破瘫（G 已证 dnf 0.75→0.06）+ T6/T7 安全钉价剪风险（低熵下致瘫的 E/D
+    # 结论是在已瘫动力学下取得，高熵下重验）；N = 退火到更高下限（括 G 与 H 之间）
+    "L_ent3_off23": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.03,
+                      "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0},
+    "M_ent3_coll23": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.03,
+                      "reward_collision_lo": 2.0, "reward_collision_hi": 3.0},
+    "N_ent3_anneal_hi": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2,
+                          "train.ent_coef": 0.03, "train.ent_coef_anneal": True, "train.ent_coef_final": 0.01},
 }
-ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:purple", "H_ent_anneal": "tab:olive", "I_vel3": "tab:red", "J_ent4": "tab:brown", "K_vel6": "tab:pink"}
+ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:purple", "H_ent_anneal": "tab:olive", "I_vel3": "tab:red", "J_ent4": "tab:brown", "K_vel6": "tab:pink", "L_ent3_off23": "tab:orange", "M_ent3_coll23": "tab:blue", "N_ent3_anneal_hi": "tab:gray"}
 
 # progress 未覆盖臂沿用的 config 默认 v1 区间（puffer_drive.yaml 现值，逐字喂 env）。
 PROGRESS_LO_DEFAULT = 2.5e-3

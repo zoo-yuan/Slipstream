@@ -847,6 +847,8 @@ def run_arms(state: dict, args, sizing: dict) -> None:
     batch = sizing["batch"]
     est_per_arm = sizing["est_per_arm_s"]
     for arm, overrides in ARMS.items():
+        if getattr(args, "only_arm", None) and arm != args.only_arm:
+            continue  # v3 双卡并行：本进程只跑指定臂
         st = state["arms"].setdefault(arm, {"status": "pending", "attempts": 0})
         if st["status"] == "done":
             log(f"=== arm {arm} already DONE (last_step={st.get('last_step')}); skipping training")

@@ -8,7 +8,7 @@ As-of: 91e7bbf（夜间战役轮 6 收官 + 蒸馏提交前）
 
 - master 基线 = 上游 PufferDrive `3.0` @ `2c1ca3e4`；`upstream` 只读；**lab42 双机线**：`zoo@192.168.202.42:/home/zoo/rino_we/808-Scale-AD/Slipstream`（2×RTX4090，同步走 `git push lab42` + `scripts/sync_lab42.sh`；父目录有他人项目勿动）。
 - **配方 v3（ADR-0007，候选定案）**：B 基座 + `ent_coef 0.05` + `offroad[2,3]` + 4.87e8 步 → eval 双面 **1.333/1.052**（基线 B 0.170/0.059 的 7.8×/18×）、碰撞 **0.0007/0.0047**（反优于 1× 15×）、速度 2.28/1.77、dnf 0.14/0.25。剂量平台 ×4-×6；velocity 方向证伪；双钉价过度约束。冠军权重在 lab42 `artifacts/t3-R2x/ckpt/R_ent5_off23/models/`。
-- 夜间战役 6 轮 × 3 GPU（3060 + 2×4090）14 个全量训练：证据在 lab42 `artifacts/t3-*`（t3-ent2 本地）；复现：R@1× 三种子 0.86-1.28 安全带紧密；R@2×@seed43 + S@seed43 在跑（09:40 收）。
+- 夜间战役 6 轮 × 3 GPU（3060 + 2×4090）14 个全量训练：证据在 lab42 `artifacts/t3-*`（t3-ent2 本地）；复现：R@1× 三种子 0.86-1.28 安全带紧密；R@2×@seed43 = 1.393/1.143（N=2 闭合）；S@seed43 = 1.232/1.003。
 - 内核旋钮谱系：T1 progress → T6 offroad → T7 collision（默认位级=legacy；本树 sha `02786a05…`，lab42 自建 sha 不同——跨机相对比较成立，锚点重定仍待 owner）。
 - 评测资产：`t3_eval_ckpt`（carla_fast 双面）；v2 弧线证据（t2-*）在案（ADR-0006）。
 

@@ -13,3 +13,8 @@
 - **mix 面 8×128 显存贴边（~10.8/12GB）**：必须独占 GPU + `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`；外来进程 0.7GB 即可挤 OOM（2026-11-10 smoke 事故）。点火前查 nvidia-smi 计算进程。
 - **探针 SPS 系统性低估 ~30%**（mix 面 probe ~39K vs 全程 realized ~50K）：sizing 预算 ×1.3 校正（T3 用 6300s 得 2.2e8 同规模）。另：k4b 系 `probe()` 原地改写 `args.steps`，消费该值的逻辑必须先存后复（t2_hazsmoke 已修）。
 - **30 分钟上限条目补充**（×N，本次 worker E 再中）：「每子步骤落盘」恢复模式经受住考验——超时后 supervisor 10 分钟接手收尾（读进度文件 + 清产物 + 补报告），无返工。
+- **探针读瞬态，禁止外推全量**（B@4.1e7 goals 1.43 → 全量 0.22 反转；ADR-0006）：~4e7 步的机动性/效率读数是收敛前瞬态；全量裁决必须全量跑，或以熵曲线拐点作预警。
+- **sed 换 Artifact 目录要认 Path 组件式构造**（t2_v2final 空跑事故）：`REPO_ROOT / "artifacts" / "t2-x"` 中的组件字符串不被 `s|artifacts/t2-x|…|g` 命中——改完必须 `import 模块打印 ART_DIR` 验证（幸好该次零训练零破坏，只是读错 state 跳过）。
+- **harness 自动 worktree 的分支名派生会被任务书里的 `../` 路径污染成非法 ref**：手工 `git worktree add -b <合法名>` + 子代理 cwd 指定是稳妥替代。
+- **热路径 diff 测试不要以 HEAD 为基线**（提交后 diff 清空 → 断言 missing 全挂）：钉 pre-knob 基线 commit + 姊妹旋钮标记豁免（tests/test_reward_{offroad,collision}_knob.py 现行写法）。
+- **管道 `pytest | tail` 吃掉 rc**：测试门必须显式 `${PIPESTATUS[0]}` 或分开执行，否则失败仍会走 commit 链（T7 集成踩中）。

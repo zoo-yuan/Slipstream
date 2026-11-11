@@ -157,8 +157,12 @@ ARMS: dict[str, dict[str, float]] = {
     "Q_ent3_both23": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.03,
                        "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0,
                        "reward_collision_lo": 2.0, "reward_collision_hi": 3.0},
+    # 轮 5：P(ent×4+off[2,3]) 新冠军 1.163/0.865 全指标支配 L。R = 剂量上探 ×5；
+    # P@seed43 复现走同配方不同 seed（GPU1，冠军可信度门）
+    "R_ent5_off23": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.05,
+                      "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0},
 }
-ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:purple", "H_ent_anneal": "tab:olive", "I_vel3": "tab:red", "J_ent4": "tab:brown", "K_vel6": "tab:pink", "L_ent3_off23": "tab:orange", "M_ent3_coll23": "tab:blue", "N_ent3_anneal_hi": "tab:gray", "P_ent4_off23": "tab:green", "Q_ent3_both23": "tab:red"}
+ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:purple", "H_ent_anneal": "tab:olive", "I_vel3": "tab:red", "J_ent4": "tab:brown", "K_vel6": "tab:pink", "L_ent3_off23": "tab:orange", "M_ent3_coll23": "tab:blue", "N_ent3_anneal_hi": "tab:gray", "P_ent4_off23": "tab:green", "Q_ent3_both23": "tab:red", "R_ent5_off23": "tab:brown"}
 
 # progress 未覆盖臂沿用的 config 默认 v1 区间（puffer_drive.yaml 现值，逐字喂 env）。
 PROGRESS_LO_DEFAULT = 2.5e-3

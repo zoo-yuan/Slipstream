@@ -370,8 +370,10 @@ class TestHotPathDiscipline:
         ]
         # Sibling knobs in the ADR-0005 lineage declare their own lines in their own
         # test files; exempt them here rather than duplicating whitelists.
+        sibling_markers = ("reward_offroad", "REWARD_COEF_OFFROAD", "T6 offroad")
         unexpected = [line for line in added
-                      if line not in self.EXPECTED_ADDED_LINES and "reward_offroad" not in line]
+                      if line not in self.EXPECTED_ADDED_LINES
+                      and not any(m in line for m in sibling_markers)]
         assert not unexpected, f"kernel diff contains undeclared added lines: {unexpected}"
         missing = self.EXPECTED_ADDED_LINES - set(added)
         assert not missing, f"declared kernel lines absent from diff: {missing}"

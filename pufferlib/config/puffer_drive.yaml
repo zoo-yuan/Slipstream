@@ -243,6 +243,11 @@ env:
   # per-agent ~ U(lo, hi) from this interval instead of the static bounds entry).
   reward_offroad_lo: 0.0
   reward_offroad_hi: 3.0
+  # T7 collision coef sampling interval for the reward_randomization branch
+  # (kernel interval knob, default = legacy U(0,3); randomization samples
+  # per-agent ~ U(lo, hi) from this interval instead of the static bounds entry).
+  reward_collision_lo: 0.0
+  reward_collision_hi: 3.0
   # m/s above the lane limit before the overspeed penalty fires
   overspeed_tolerance_mps: 0.0
   reward_ade: 0.0

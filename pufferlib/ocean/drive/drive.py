@@ -44,6 +44,11 @@ class Drive(pufferlib.PufferEnv):
         # unconditional so the RNG stream shape never changes.
         reward_offroad_lo=0.0,
         reward_offroad_hi=3.0,
+        # T7 collision coef sampling interval for the reward_randomization branch
+        # (per-agent ~ U(lo, hi)); default = legacy static U(0, 3), draws stay
+        # unconditional so the RNG stream shape never changes.
+        reward_collision_lo=0.0,
+        reward_collision_hi=3.0,
         overspeed_tolerance_mps=0.0,
         reward_ade=0.0,
         min_goal_spacing=20.0,
@@ -295,6 +300,17 @@ class Drive(pufferlib.PufferEnv):
             raise ValueError(
                 f"reward_offroad_lo/hi must be finite with lo <= hi (default [0, 3] = legacy U(0, 3)), "
                 f"got {reward_offroad_lo}, {reward_offroad_hi}"
+            )
+        self.reward_collision_lo = float(reward_collision_lo)
+        self.reward_collision_hi = float(reward_collision_hi)
+        if (
+            not np.isfinite(self.reward_collision_lo)
+            or not np.isfinite(self.reward_collision_hi)
+            or self.reward_collision_lo > self.reward_collision_hi
+        ):
+            raise ValueError(
+                f"reward_collision_lo/hi must be finite with lo <= hi (default [0, 3] = legacy U(0, 3)), "
+                f"got {reward_collision_lo}, {reward_collision_hi}"
             )
         self.overspeed_tolerance_mps = float(overspeed_tolerance_mps)
         if not (self.overspeed_tolerance_mps >= 0.0) or not np.isfinite(self.overspeed_tolerance_mps):
@@ -737,6 +753,8 @@ class Drive(pufferlib.PufferEnv):
             "reward_progress_hi": self.reward_progress_hi,
             "reward_offroad_lo": self.reward_offroad_lo,
             "reward_offroad_hi": self.reward_offroad_hi,
+            "reward_collision_lo": self.reward_collision_lo,
+            "reward_collision_hi": self.reward_collision_hi,
             "overspeed_tolerance_mps": self.overspeed_tolerance_mps,
             "reward_ade": self.reward_ade,
             "collision_behavior": self.collision_behavior,

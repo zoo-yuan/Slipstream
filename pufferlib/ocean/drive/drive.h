@@ -332,6 +332,8 @@ struct Drive {
     float reward_progress_hi;
     float reward_offroad_lo; // T6 offroad coef randomization sampling interval; default [0, 3] = legacy static U(0, 3) stream
     float reward_offroad_hi;
+    float reward_collision_lo; // T7 collision coef randomization sampling interval; default [0, 3] = legacy static U(0, 3) stream
+    float reward_collision_hi;
     float overspeed_tolerance_mps;
     float reward_ade;
     int reward_conditioning;
@@ -2728,6 +2730,14 @@ static void generate_reward_coefs(Drive *env, Agent *agent) {
         const RewardBound *bounds = env->reward_log_sampling ? REWARD_BOUNDS_LOG : REWARD_BOUNDS;
         for (int i = 0; i < (int) (sizeof(random_coefs) / sizeof(random_coefs[0])); i++) {
             int c = random_coefs[i];
+            if (c == REWARD_COEF_COLLISION) {
+                // T7 collision interval knob: sampled from the env-level [lo, hi] interval instead of
+                // the static REWARD_BOUNDS entry. The draw stays in the loop slot and unconditional,
+                // so draw count and order are unchanged and the default [0, 3] interval reproduces
+                // the legacy U(0, 3) stream bit-for-bit.
+                agent->reward_coefs[c] = sample_uniform(&env->rng_state, env->reward_collision_lo, env->reward_collision_hi);
+                continue;
+            }
             if (c == REWARD_COEF_OFFROAD) {
                 // T6 offroad interval knob: sampled from the env-level [lo, hi] interval instead of
                 // the static REWARD_BOUNDS entry. The draw stays in the loop slot and unconditional,

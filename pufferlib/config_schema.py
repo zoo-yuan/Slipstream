@@ -357,6 +357,8 @@ class DriveEnvConfig:
     reward_progress_hi: float = _constrained_field(FINITE_NUMBER_CONSTRAINT)
     reward_offroad_lo: float = _constrained_field(FINITE_NUMBER_CONSTRAINT)
     reward_offroad_hi: float = _constrained_field(FINITE_NUMBER_CONSTRAINT)
+    reward_collision_lo: float = _constrained_field(FINITE_NUMBER_CONSTRAINT)
+    reward_collision_hi: float = _constrained_field(FINITE_NUMBER_CONSTRAINT)
     overspeed_tolerance_mps: float = _constrained_field(NONNEGATIVE_NUMBER_CONSTRAINT)
     reward_ade: float = _constrained_field(FINITE_NUMBER_CONSTRAINT)
     map_dir: str = MISSING

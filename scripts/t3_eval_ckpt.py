@@ -224,7 +224,7 @@ def build_eval_overrides(model_path: Path, face: str, num_scenarios: int, out_la
         f"eval.output_dir_name={out_label_dir}",
         f"eval.output_subdir={output_subdir}",
         # worker 数 = min(vec.num_envs, num_scenarios)，上限硬件线程数（vector.py fail-fast）
-        f"vec.num_envs={min(hardware_threads(), num_scenarios)}",
+        f"vec.num_envs={min(hardware_threads(), num_scenarios, 32)}",  # 32 封顶：多核机会器上 192 env worker 会拖爆 CPU/GPU 全闲
     ]
     face_record: dict
     if face == "mix":

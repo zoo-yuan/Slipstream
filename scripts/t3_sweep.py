@@ -133,8 +133,11 @@ ARMS: dict[str, dict[str, float]] = {
     # 键约定："train." 前缀 → cfg["train"]，其余 → cfg["env"]。
     "F_ent2": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.02},
     "G_ent3": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.03},
+    # H = 形状变体：0.02 起步、末 25% 退火到 0.005（高探索起步 + 软暮年下限，对抗常数高熵的晚期噪声）
+    "H_ent_anneal": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2,
+                      "train.ent_coef": 0.02, "train.ent_coef_anneal": True, "train.ent_coef_final": 0.005},
 }
-ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:magenta"}
+ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:magenta", "H_ent_anneal": "tab:olive"}
 
 # progress 未覆盖臂沿用的 config 默认 v1 区间（puffer_drive.yaml 现值，逐字喂 env）。
 PROGRESS_LO_DEFAULT = 2.5e-3

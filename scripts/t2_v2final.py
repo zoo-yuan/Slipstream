@@ -77,7 +77,7 @@ import numpy as np
 import psutil
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ART_DIR = REPO_ROOT / "artifacts" / "t2-v2sweep"
+ART_DIR = REPO_ROOT / "artifacts" / "t2-v2final"
 # 臂毕自动 eval 的入口脚本（独立评测 CLI；--out 产物落在 ART_DIR 下 eval-<face>-<arm>/）。
 EVAL_SCRIPT = REPO_ROOT / "scripts" / "t3_eval_ckpt.py"
 EVAL_BENCHMARK = "carla_fast"

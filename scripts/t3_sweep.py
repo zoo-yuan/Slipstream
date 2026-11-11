@@ -955,12 +955,12 @@ def view_and_harvest_block(state: dict, sizing: dict | None) -> list[str]:
     return lines
 
 
-def final_summary(state: dict, sizing: dict | None) -> None:
+def final_summary(state: dict, sizing: dict | None, args=None) -> None:
     def fnum(v):
         return f"{v:.3f}" if isinstance(v, float) else "-"
 
     log("==== T3 SWEEP FINAL SUMMARY ====")
-    for arm in ([args.only_arm] if getattr(args, "only_arm", None) else list(ARMS)):
+    for arm in ((getattr(args, "only_arm", None) and [args.only_arm]) or list(ARMS)):
         st = state["arms"].get(arm) or {}
         eval_st = st.get("eval") or {}
         rows = read_epoch_rows(CKPT_DIR / arm / "metrics.csv")
@@ -1029,7 +1029,7 @@ def orchestrate(args) -> None:
         log(line)
 
     run_arms(state, args, sizing)
-    final_summary(state, sizing)
+    final_summary(state, sizing, args)
 
 
 # ------------------------------------------------------------ collect (v2 harvest) ---

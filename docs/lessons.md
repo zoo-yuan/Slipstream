@@ -22,3 +22,4 @@
 - **多核机会让评测 worker 数爆炸**（192 env worker 全在 CPU 打转、GPU 全闲 90 分钟）：vec worker 数 = min(hw_threads, scenarios, **32**)；慢 ≠ 挂，先 pgrep 看进程在干嘛。
 - **LAN 直灌 site-packages 是最快的跨机建环境法**（8.9G/3 分钟替代慢链路 torch 下载）：venv 壳用 uv venv 重建（路径烧死不可搬），site-packages 纯数据可直拷；manylinux 轮子跨 Ubuntu 版本可用。
 - **`pkill -f` 自匹配第三次**（远程 ssh 命令串含模式即自杀）：一律 `[x]x` 括号技巧或按 PID。
+- **模型迁移必须连 config.yaml 一起搬**（本地渲染冠军模型时踩中）：pufferl eval 靠 ckpt 目录的 config.yaml 恢复架构，只拷 models/*.pt 会在加载时 RuntimeError。

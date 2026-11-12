@@ -15,7 +15,8 @@ As-of: 91e7bbf（夜间战役轮 6 收官 + 蒸馏提交前）
 ## Docs 台账
 
 - `docs/2026-11-03-Terra系列全景与PufferDrive落地路线.md`（冻结）；`.wayfinder/research/` 四份。
-- 本会话 docs/ 根无新增日期前缀文件；夜间战役过程叙事在 `.scratch/night-2026-11-11.md`（易碎层）。
+- `docs/2026-11-12-量级改进路径提案.md`（冻结提案，待 owner 评审；决策点 5 项）。
+- 夜间战役过程叙事在 `.scratch/night-2026-11-11.md`（易碎层）。
 
 ## Next（下一步）
 

@@ -43,8 +43,8 @@ run_stage 16x 22000 --seed 42 --only-arm R_ent5_off23 --arm-steps 3892314112 \
 run_stage cap2048 17000 --seed 42 --only-arm X_cap2048 --arm-steps 1946157056 \
   --face 16x256 --art-dir artifacts/t3-w3-X_cap2048 --total-budget-s 17000 --allow-kernel-drift
 
-# stage 3: 32x (partial by design; TERM at deadline, rolling checkpoints preserved)
-run_stage 32x 50000 --seed 42 --only-arm R_ent5_off23 --arm-steps 7784628224 \
-  --face 16x256 --art-dir artifacts/t3-f16-32x --total-budget-s 50000 --allow-kernel-drift
+# stage 3: 16x seed-43 replication (N=2 tradition; 32x moved to GPU1 standalone 21:11)
+run_stage 16xs43 22000 --seed 43 --only-arm R_ent5_off23 --arm-steps 3892314112 \
+  --face 16x256 --art-dir artifacts/t3-f16-16x-s43 --total-budget-s 22000 --allow-kernel-drift
 
 echo "===== chain end $(date '+%F %T')" >> "$LOG"

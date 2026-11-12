@@ -175,8 +175,13 @@ ARMS: dict[str, dict[str, float]] = {
                         "reward_offroad_lo": 1.5, "reward_offroad_hi": 2.0},
     "W_ent5_progv1": {"reward_progress_lo": 2.5e-3, "reward_progress_hi": 2.5e-2, "train.ent_coef": 0.05,
                        "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0},
+    # Wave3 容量首开（量级提案路径③联动第一步，2026-11-12 夜）：R 冠军配方原封 + backbone
+    # 1024→2048（单变量；容量轴从未动过，Chinchilla 式规模×容量联动）。
+    "X_cap2048": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.05,
+                   "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0,
+                   "policy.backbone_hidden_size": 2048},
 }
-ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:purple", "H_ent_anneal": "tab:olive", "I_vel3": "tab:red", "J_ent4": "tab:brown", "K_vel6": "tab:pink", "L_ent3_off23": "tab:orange", "M_ent3_coll23": "tab:blue", "N_ent3_anneal_hi": "tab:gray", "P_ent4_off23": "tab:green", "Q_ent3_both23": "tab:red", "R_ent5_off23": "tab:brown", "S_ent6_off23": "tab:purple", "T_ent5_anneal": "tab:olive", "U_ent5_off2530": "tab:green", "V_ent5_off1520": "tab:blue", "W_ent5_progv1": "tab:orange"}
+ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:purple", "H_ent_anneal": "tab:olive", "I_vel3": "tab:red", "J_ent4": "tab:brown", "K_vel6": "tab:pink", "L_ent3_off23": "tab:orange", "M_ent3_coll23": "tab:blue", "N_ent3_anneal_hi": "tab:gray", "P_ent4_off23": "tab:green", "Q_ent3_both23": "tab:red", "R_ent5_off23": "tab:brown", "S_ent6_off23": "tab:purple", "T_ent5_anneal": "tab:olive", "U_ent5_off2530": "tab:green", "V_ent5_off1520": "tab:blue", "W_ent5_progv1": "tab:orange", "X_cap2048": "tab:cyan"}
 
 # progress 未覆盖臂沿用的 config 默认 v1 区间（puffer_drive.yaml 现值，逐字喂 env）。
 PROGRESS_LO_DEFAULT = 2.5e-3

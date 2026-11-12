@@ -164,6 +164,10 @@ ARMS: dict[str, dict[str, float]] = {
     # 轮 6：剂量曲线收尾（×6；×5≈×4 已走平）；R@2× 预算走 --arm-steps 486539264 同配方
     "S_ent6_off23": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.06,
                       "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0},
+    # Wave1 精修轴：R 配方 + 末段熵退火（0.05→0.01，末 25%）——高机动起步 + 收尾抛光（H 已证退火形状安全最佳）
+    "T_ent5_anneal": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.05,
+                       "train.ent_coef_anneal": True, "train.ent_coef_final": 0.01,
+                       "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0},
 }
 ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:purple", "H_ent_anneal": "tab:olive", "I_vel3": "tab:red", "J_ent4": "tab:brown", "K_vel6": "tab:pink", "L_ent3_off23": "tab:orange", "M_ent3_coll23": "tab:blue", "N_ent3_anneal_hi": "tab:gray", "P_ent4_off23": "tab:green", "Q_ent3_both23": "tab:red", "R_ent5_off23": "tab:brown", "S_ent6_off23": "tab:purple"}
 
@@ -488,8 +492,10 @@ def run_worker(args) -> None:
     cfg["env"]["reward_progress_lo"] = arm_overrides.get("reward_progress_lo", PROGRESS_LO_DEFAULT)
     cfg["env"]["reward_progress_hi"] = arm_overrides.get("reward_progress_hi", PROGRESS_HI_DEFAULT)
     for key, value in arm_overrides.items():
-        if key.startswith("train."):
-            cfg["train"][key.split(".", 1)[1]] = value  # v3: trainer-level knobs (ent_coef …)
+        # 泛化路由：<section>.<key> → cfg[section][key]（train./policy./vec.…），裸键 → cfg["env"]
+        if "." in key:
+            sec, sub = key.split(".", 1)
+            cfg[sec][sub] = value
         else:
             cfg["env"][key] = value
 
@@ -1370,10 +1376,15 @@ def main() -> None:
     p.add_argument("--num-envs", type=int, default=8, help=argparse.SUPPRESS)
     p.add_argument("--num-agents", type=int, default=128, help=argparse.SUPPRESS)
     p.add_argument("--only-arm", choices=list(ARMS), help="v3 双卡并行：本次只跑指定臂（另一卡另起进程）")
+    p.add_argument("--face", default=None, help="面规模解锁（如 16x256；默认 8x128=B-parity。4090 24GB 可跑 4× batch）")
     p.add_argument("--arm-steps", type=int, default=0, help="v3 步数对齐模式：钉死每臂步数（floor-to-epoch），预算仅作上限（跨机可比性）")
     p.add_argument("--art-dir", default=None, help="v3 双卡隔离：覆盖产物目录（默认 artifacts/t3-sweep；双卡各用一目录避免 state 竞争）")
     args = p.parse_args()
 
+    if args.face:
+        global FACES
+        e, a = args.face.lower().split("x")
+        FACES[:] = [(int(e), int(a))]  # 探针阶梯随之单面化（不稳定即拒跑）
     if args.art_dir:
         art = (REPO_ROOT / args.art_dir).resolve() if not str(args.art_dir).startswith("/") else Path(args.art_dir)
         global ART_DIR, CKPT_DIR, PROBE_DIR, STATE_PATH, DECISION_PATH, ORCH_LOG

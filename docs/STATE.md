@@ -1,7 +1,7 @@
 # STATE
 
 As-of: 261fd86（夜间规模战役 III：16× 新冠军 2.978/2.792 @400 场景双面，32× 回落定位峰位）
-（2026-11-13 晨：owner 授权 GPU 窗口收尾；cap2048 OOM 待独占卡；val14 数据三缺口在案）
+（2026-11-13 晨：owner 授权 GPU 窗口收尾；cap2048 OOM 待独占卡；北极星对齐+数据轴裁决输入已入 docs，Apollo bag 路线待 owner 供样）
 约定：AGENTS.md 是放置规则权威；strata 分层自 2026-11-03 启用；TerraZero 复刻 effort 活图在 `.wayfinder/map.md`（已完成）。**裁决真值在 `docs/adr/0001-0007`**（基底/配方v1/执法/运行时独立/奖励区间旋钮谱系/保守吸引子/熵破解配方v3）。
 
 ## Where（现状）
@@ -20,6 +20,7 @@ As-of: 261fd86（夜间规模战役 III：16× 新冠军 2.978/2.792 @400 场景
 
 - `docs/2026-11-03-Terra系列全景与PufferDrive落地路线.md`（冻结）；`.wayfinder/research/` 六份。
 - `docs/2026-11-12-量级改进路径提案.md`（冻结提案，待 owner 评审；决策点 5 项；夜间执行后两处修正见 research notes）。
+- `docs/2026-11-13-北极星对齐与数据轴裁决输入.md`（冻结：两星距离评估 + val14 四问 + Apollo bag 格式要求/owner 清单；北极星距离条首条存档）。
 - `.wayfinder/research/selfplay-v4-findings.md` + `val14-data-recon.md`（2026-11-13，路径②①实况修正）。
 - 夜间战役过程叙事在 `.scratch/night-2026-11-11.md`（易碎层）。
 

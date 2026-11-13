@@ -21,6 +21,7 @@ As-of: 261fd86（夜间规模战役 III：16× 新冠军 2.978/2.792 @400 场景
 - `docs/2026-11-03-Terra系列全景与PufferDrive落地路线.md`（冻结）；`.wayfinder/research/` 六份。
 - `docs/2026-11-12-量级改进路径提案.md`（冻结提案，待 owner 评审；决策点 5 项；夜间执行后两处修正见 research notes）。
 - `docs/2026-11-13-北极星对齐与数据轴裁决输入.md`（冻结：两星距离评估 + val14 四问 + Apollo bag 格式要求/owner 清单；北极星距离条首条存档）。
+- `docs/2026-11-13-SOTA模型规格与ONNX导出及评测方法.md`（实证：obs 821 布局/12 类动作/7.6M 参数；ONNX 导出脚本 `scripts/export_onnx.py` + ORT 对拍 8.6e-6；评测面构造与指标计算逻辑）。
 - `.wayfinder/research/selfplay-v4-findings.md` + `val14-data-recon.md`（2026-11-13，路径②①实况修正）。
 - 夜间战役过程叙事在 `.scratch/night-2026-11-11.md`（易碎层）。
 

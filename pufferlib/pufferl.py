@@ -136,6 +136,131 @@ def logits_to_float(logits):
     return logits.float()
 
 
+class SelfplayMixer:
+    """v4 SPACeR self-play rollout controller (reference-anchored snapshot pool).
+
+    Holds a per-global-agent-slot role assignment, K frozen snapshot servers
+    ring-loaded with past learner weights, and an optional frozen reference
+    policy. ``PuffeRL`` constructs a mixer only when ``selfplay_p_learner <
+    1.0``; the off path never touches this class, so v3's RNG stream and
+    single-policy rollout are bit-identical when self-play is disabled.
+
+    Role encoding in ``roles``: 0 = learner (ego), 1 = reference, 2 + i =
+    snapshot pool slot i. Roles are drawn once from a private
+    ``torch.Generator`` so the global RNG stream is never consumed; global
+    agent slots are the coordinate system shared by ``env_id`` recv slices and
+    the ``ep_indices`` row mapping, so roles stay stable across resets.
+    """
+
+    ROLE_LEARNER = 0
+    ROLE_REF = 1
+
+    def __init__(self, uncompiled_policy, total_agents, config, seed, device):
+        p_learner = config["selfplay_p_learner"]
+        p_ref = config["selfplay_p_ref"]
+        self.uncompiled_policy = uncompiled_policy
+        self.pool_size = config["selfplay_snapshot_pool_size"]
+        self.snapshot_interval = config["selfplay_snapshot_interval"]
+        self.snapshot_writes = 0
+
+        # Role assignment: one categorical draw per agent slot; snapshot-role
+        # slots then draw their pool slot index (D1). A missing seed falls back
+        # to a fixed value rather than the global RNG.
+        generator = torch.Generator()
+        generator.manual_seed(seed if seed is not None else 0)
+        probs = torch.tensor([p_learner, p_ref, config["selfplay_p_snapshot"]], dtype=torch.float64)
+        roles = torch.multinomial(probs.repeat(total_agents, 1), 1, replacement=True, generator=generator).flatten()
+        snapshot_rows = roles == 2
+        num_snapshot = int(snapshot_rows.sum())
+        if num_snapshot > 0 and self.pool_size > 1:
+            roles[snapshot_rows] = 2 + torch.randint(self.pool_size, (num_snapshot,), generator=generator)
+        self.roles = roles.to(device=device)
+        self.ego_agent_mask = self.roles == 0
+
+        # Epoch-0 pool = learner initial weights so the mix ratio holds from the
+        # first step; servers are frozen module copies updated in place on ring
+        # writes (no per-step deepcopy).
+        initial_state = {k: v.detach().to("cpu").clone() for k, v in uncompiled_policy.state_dict().items()}
+        self._pool = [dict(initial_state) for _ in range(self.pool_size)]
+        self.servers = []
+        for _slot in range(self.pool_size):
+            server = copy.deepcopy(uncompiled_policy).eval()
+            server.requires_grad_(False)
+            server.load_state_dict(initial_state)
+            self.servers.append(server)
+
+        self.ref_policy = None
+        if p_ref > 0.0:
+            # Cleaned like a resume checkpoint; key/shape mismatch fails fast.
+            ref_state = clean_policy_state_dict(
+                torch.load(config["selfplay_ref_model_path"], map_location="cpu")
+            )
+            self.ref_policy = copy.deepcopy(uncompiled_policy).eval()
+            self.ref_policy.requires_grad_(False)
+            self.ref_policy.load_state_dict(ref_state)
+
+    @torch.no_grad()
+    def forward_batch(self, obs, roles, state, learner_policy, env_continuous):
+        """Grouped multi-policy forward for one contiguous recv block (D2/D5).
+
+        Rows are grouped by role, each group is forwarded through its policy in
+        one batch, and results are scattered back into row-aligned tensors.
+        Returns ``(action, logprob, value, cont_action)``. Partner rows carry
+        their source policy's sampled action and value but a zero logprob; the
+        zero never reaches the PPO ratio because partner rows are masked out of
+        the rollout buffer (D3). CONSTRAINT: any future path that reads
+        ``logprobs`` without filtering on the rollout masks will pull these
+        zeros into exp(ratio) -- keep that invariant when touching the buffer.
+        ``state`` is shared across groups, which is safe only because self-play
+        requires use_rnn=false (schema-enforced; the drive policy ignores state).
+        """
+        n = obs.shape[0]
+        action = logprob = value = cont_action = None
+        for role in torch.unique(roles):
+            rows = (roles == role).nonzero(as_tuple=False).flatten()
+            if role == self.ROLE_LEARNER:
+                module = learner_policy
+            elif role == self.ROLE_REF:
+                module = self.ref_policy
+            else:
+                module = self.servers[int(role) - 2]
+            logits, role_value = module.forward_eval(obs[rows], state)
+            logits = logits_to_float(logits)
+            role_action, role_logprob, _, role_cont = pufferlib.pytorch.sample_logits(
+                logits, env_continuous=env_continuous, policy=self.uncompiled_policy
+            )
+            if action is None:
+                action = torch.zeros(n, *role_action.shape[1:], dtype=role_action.dtype, device=obs.device)
+                logprob = torch.zeros(n, dtype=role_logprob.dtype, device=obs.device)
+                value = torch.zeros(n, dtype=torch.float32, device=obs.device)
+                if role_cont is not None:
+                    cont_action = torch.zeros(n, *role_cont.shape[1:], dtype=role_cont.dtype, device=obs.device)
+            action[rows] = role_action
+            if role == self.ROLE_LEARNER:
+                logprob[rows] = role_logprob.float()
+            # Partner logprobs stay zero by construction (see docstring).
+            value[rows] = role_value.flatten().float()
+            if cont_action is not None and role_cont is not None:
+                cont_action[rows] = role_cont
+        return action, logprob, value, cont_action
+
+    def snapshot_update(self, epoch):
+        """Ring-insert current learner weights into the pool; True if written.
+
+        Called from ``PuffeRL.train`` after the optimizer updates complete
+        (DDP gradients are all-reduced by then, so every rank inserts identical
+        weights and the pools stay rank-consistent without extra comms).
+        """
+        if (epoch + 1) % self.snapshot_interval != 0:
+            return False
+        state = {k: v.detach().to("cpu").clone() for k, v in self.uncompiled_policy.state_dict().items()}
+        slot = self.snapshot_writes % self.pool_size
+        self._pool[slot] = state
+        self.servers[slot].load_state_dict(state)
+        self.snapshot_writes += 1
+        return True
+
+
 class PuffeRL:
     def __init__(self, config, vecenv, policy, logger=None):
         # Backend perf optimization; tf32=False forces true float32 matmuls/convs
@@ -255,6 +380,13 @@ class PuffeRL:
             self.policy = torch.compile(policy, **compile_kwargs)
             self.policy.forward_eval = torch.compile(self.uncompiled_policy.forward_eval, **compile_kwargs)
             pufferlib.pytorch.sample_logits = torch.compile(pufferlib.pytorch.sample_logits, **compile_kwargs)
+
+        # v4 SPACeR self-play: the mixer exists only when the learner cedes any
+        # agent slot (selfplay_p_learner < 1.0). The off path draws no roles and
+        # consumes no RNG, keeping the v3 rollout bitstream intact.
+        self.selfplay = None
+        if config.get("selfplay_p_learner", 1.0) < 1.0:
+            self.selfplay = SelfplayMixer(self.uncompiled_policy, total_agents, config, seed, device)
 
         # Optimizer
         if config["optimizer"] == "adam":
@@ -415,6 +547,18 @@ class PuffeRL:
             d = torch.as_tensor(d).to(device)  # , non_blocking=True)
             t = torch.as_tensor(t).to(device)  # , non_blocking=True)
             m = torch.as_tensor(mask).to(device)  # , non_blocking=True)
+            if self.selfplay is not None:
+                # v4 self-play: partner rows leave the PPO buffer by ANDing the
+                # env mask with the per-slot ego role mask (D3). The off path
+                # never reaches here, so v3 masks are untouched.
+                # Continuity guard (review A3): role/mask indexing assumes the
+                # recv block is one contiguous agent-id span; a non-contiguous
+                # block would scatter masks across wrong slots, so fail fast.
+                assert env_id.stop - env_id.start == m.shape[0], (
+                    f"self-play rollout got a non-contiguous agent block: "
+                    f"env_id span {env_id.stop - env_id.start} != {m.shape[0]} recv rows"
+                )
+                m = m & self.selfplay.ego_agent_mask[env_id]
             done_mask = (d + t).clamp(max=1.0)
 
             # Obs distribution stats (max/min/mean across the batch and obs
@@ -440,11 +584,22 @@ class PuffeRL:
                     state["lstm_h"] = self.lstm_h[env_id.start]
                     state["lstm_c"] = self.lstm_c[env_id.start]
 
-                logits, value = self.policy.forward_eval(o_device, state)
-                logits = logits_to_float(logits)
-                action, logprob, _, cont_action = pufferlib.pytorch.sample_logits(
-                    logits, env_continuous=self.env_continuous, policy=self.uncompiled_policy
-                )
+                if self.selfplay is not None:
+                    # v4 self-play: one grouped forward per policy present in
+                    # this block (learner / ref / each used snapshot slot).
+                    action, logprob, value, cont_action = self.selfplay.forward_batch(
+                        o_device,
+                        self.selfplay.roles[env_id],
+                        state,
+                        learner_policy=self.policy,
+                        env_continuous=self.env_continuous,
+                    )
+                else:
+                    logits, value = self.policy.forward_eval(o_device, state)
+                    logits = logits_to_float(logits)
+                    action, logprob, _, cont_action = pufferlib.pytorch.sample_logits(
+                        logits, env_continuous=self.env_continuous, policy=self.uncompiled_policy
+                    )
                 if config["normalize_rewards"]:
                     r = torch.sign(r) * torch.log1p(torch.abs(r))
 
@@ -496,7 +651,10 @@ class PuffeRL:
                 self.vecenv.send(cont_action)
             else:
                 action = action.cpu().numpy()
-                if isinstance(logits, torch.distributions.Normal):
+                # logits is a Normal exactly when the producing policy is
+                # continuous (fixed by the policy architecture), which stays
+                # true for the per-role forwards of the self-play mixer.
+                if self.uncompiled_policy.is_continuous:
                     action = np.clip(action, self.vecenv.action_space.low, self.vecenv.action_space.high)
                 self.vecenv.send(action)
 
@@ -519,6 +677,11 @@ class PuffeRL:
             self._train_ppo_trajectory(losses, profile, epoch)
         else:
             self._train_ppo_transition(losses, profile, epoch)
+
+        # v4 self-play: ring-insert learner weights into the snapshot pool once
+        # the update (and any DDP all-reduce) has completed.
+        if self.selfplay is not None:
+            self.selfplay.snapshot_update(epoch)
 
         profile("train_misc", epoch)
         if config["anneal_lr"]:

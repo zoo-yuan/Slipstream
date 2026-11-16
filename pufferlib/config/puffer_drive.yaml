@@ -433,6 +433,21 @@ train:
   render_num_maps: null
   # Stop after this many epochs in this process (debug/render runs); null runs to total_timesteps
   stop_after_epochs: null
+  # --- v4 SPACeR self-play (reference-anchored snapshot pool) ---
+  # Role mix over the global agent slots. Defaults below are pure v3: the learner
+  # drives every agent and PuffeRL never constructs a mixer (no RNG consumed).
+  # Fraction of slots driven by the learner; those ego rows stay in the PPO buffer.
+  selfplay_p_learner: 1.0
+  # Fraction driven by a frozen reference checkpoint (requires the path below).
+  selfplay_p_ref: 0.0
+  # Fraction driven by the snapshot pool (past learner weights).
+  selfplay_p_snapshot: 0.0
+  # Frozen reference checkpoint for selfplay_p_ref rows; null disables the ref role.
+  selfplay_ref_model_path: null
+  # Frozen snapshot servers in the ring pool; epoch 0 pool = learner initial weights.
+  selfplay_snapshot_pool_size: 4
+  # Epochs between snapshot pool insertions (after each completed training update).
+  selfplay_snapshot_interval: 50
 sweep:
   method: Protein
   metric: score

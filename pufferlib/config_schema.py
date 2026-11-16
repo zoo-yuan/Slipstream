@@ -501,6 +501,14 @@ class TrainingConfig:
     render_interval: int = _constrained_field(POSITIVE_INT_CONSTRAINT)
     render_num_maps: int | None = _constrained_field(POSITIVE_INT_CONSTRAINT)
     stop_after_epochs: int | None = _constrained_field(POSITIVE_INT_CONSTRAINT)
+    # v4 SPACeR self-play: role mix over the in-env agents. Defaults keep pure v3
+    # behavior (learner drives every agent; PuffeRL never constructs a mixer).
+    selfplay_p_learner: float = _constrained_field(PROBABILITY_CONSTRAINT)
+    selfplay_p_ref: float = _constrained_field(PROBABILITY_CONSTRAINT)
+    selfplay_p_snapshot: float = _constrained_field(PROBABILITY_CONSTRAINT)
+    selfplay_ref_model_path: str | None = MISSING
+    selfplay_snapshot_pool_size: int = _constrained_field(POSITIVE_INT_CONSTRAINT)
+    selfplay_snapshot_interval: int = _constrained_field(POSITIVE_INT_CONSTRAINT)
     # Derived by load_config from rnn_name and intentionally absent from YAML.
     use_rnn: bool = MISSING
 
@@ -842,6 +850,35 @@ def _validate_cross_field_constraints(config, context):
                         "train.minibatch_size",
                         f"the effective minibatch size ({effective_minibatch_size}) must be divisible by the auto-computed bptt_horizon ({horizon})",
                     )
+
+        # --- v4 SPACeR self-play role-mix invariants (defaults are pure v3) ---
+        selfplay_mix = train["selfplay_p_learner"] + train["selfplay_p_ref"] + train["selfplay_p_snapshot"]
+        if abs(selfplay_mix - 1.0) > 1e-6:
+            _raise_config_error(
+                context,
+                "train.selfplay_p_learner",
+                "selfplay_p_learner + selfplay_p_ref + selfplay_p_snapshot must sum to 1 "
+                f"(got {selfplay_mix})",
+            )
+        if train["selfplay_p_ref"] > 0.0 and train["selfplay_ref_model_path"] is None:
+            _raise_config_error(
+                context,
+                "train.selfplay_ref_model_path",
+                "is required when train.selfplay_p_ref > 0",
+            )
+        if train["selfplay_p_snapshot"] > 0.0 and train["selfplay_snapshot_pool_size"] < 1:
+            _raise_config_error(
+                context,
+                "train.selfplay_snapshot_pool_size",
+                "must be at least 1 when train.selfplay_p_snapshot > 0",
+            )
+        if train["selfplay_p_learner"] < 1.0 and train["use_rnn"]:
+            _raise_config_error(
+                context,
+                "train.use_rnn",
+                "cannot be enabled with self-play (selfplay_p_learner < 1); "
+                "LSTM state partitioning across roles is out of scope",
+            )
     eval_config = config["eval"]
     evaluation_required = context.startswith("evaluation") or config["train"]["evaluation_interval_epochs"] is not None
     if not eval_config:

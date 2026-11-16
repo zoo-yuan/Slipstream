@@ -127,7 +127,8 @@ MIN_ARM_EPOCHS = 10
 #   B_proghalf = progress 区间减半（T1 特例：progress 采样独立于 reward_randomization，真实生效）。
 # 未覆盖键沿用 config 默认（kernel 校验 finite + lo <= hi）。对照 = A 臂即 v1 同视界
 #（另可对照 T3 v1 曲线 artifacts/t2-haztrain/metrics.csv）。
-ARMS: dict[str, dict[str, float]] = {
+# 值类型 float | str：train.* 泛化路由可喂字符串（如 selfplay_ref_model_path 的 ckpt 路径）。
+ARMS: dict[str, dict[str, float | str]] = {
     # v3 熵控探针（ADR-0006 病灶=熵衰减→保守吸引子）：基座 = B 配方（proghalf，无安全钉价），
     # 臂维度 = train.ent_coef 倍率（默认 0.01）；全量直跑（探针读瞬态，禁外推），步数对齐 B@2.43e8。
     # 键约定："train." 前缀 → cfg["train"]，其余 → cfg["env"]。
@@ -180,8 +181,28 @@ ARMS: dict[str, dict[str, float]] = {
     "X_cap2048": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.05,
                    "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0,
                    "policy.backbone_hidden_size": 2048},
+    # Wave4 SPACeR 自博弈首开（v4 提案 D6 + 评审必改①并入）：基座 = R 冠军配方原封；
+    # Y = 提案主臂（ego 25%）；Z = p_learner=0.5 姊妹臂（评审 A1 样本预算错配缓解）。
+    # ref = R 冠军 ckpt（已核存在；Y/Z 必须沿用冠军同构 policy 段，X 的 2048 backbone
+    # 与其不互载，ref load 不匹配即 fail-fast）。
+    # ⚠ 待 owner 裁决：total_timesteps 是否按 1/p_learner 放大做补偿对照（ego 有效
+    #   样本流 4×/2× 缩水 × minibatch/lr/ent 超参沿用 v3 谱系的错配风险，提案 §7/
+    #   评审 A1）；未裁决前两臂步数与其他臂对齐，解读对手门时须注明样本预算差。
+    # ⚠ 退火错排警示：lr 退火按 epoch、ent_coef 退火按 global_step——而 evaluate() 对
+    #   全部角色（含 ref/快照伙伴）的 agent 步计数，p_learner<1 时 ego 样本量与
+    #   global_step 脱钩；读 selfplay 臂的退火进度/SPS 时不能直接套 v3 口径。
+    "Y_selfplay": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.05,
+                    "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0,
+                    "train.selfplay_p_learner": 0.25, "train.selfplay_p_ref": 0.45,
+                    "train.selfplay_p_snapshot": 0.30,
+                    "train.selfplay_ref_model_path": "artifacts/t3-R4x/ckpt/R_ent5_off23/models/model_puffer_drive_007424.pt"},
+    "Z_selfplay_half": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.05,
+                          "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0,
+                          "train.selfplay_p_learner": 0.5, "train.selfplay_p_ref": 0.3,
+                          "train.selfplay_p_snapshot": 0.2,
+                          "train.selfplay_ref_model_path": "artifacts/t3-R4x/ckpt/R_ent5_off23/models/model_puffer_drive_007424.pt"},
 }
-ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:purple", "H_ent_anneal": "tab:olive", "I_vel3": "tab:red", "J_ent4": "tab:brown", "K_vel6": "tab:pink", "L_ent3_off23": "tab:orange", "M_ent3_coll23": "tab:blue", "N_ent3_anneal_hi": "tab:gray", "P_ent4_off23": "tab:green", "Q_ent3_both23": "tab:red", "R_ent5_off23": "tab:brown", "S_ent6_off23": "tab:purple", "T_ent5_anneal": "tab:olive", "U_ent5_off2530": "tab:green", "V_ent5_off1520": "tab:blue", "W_ent5_progv1": "tab:orange", "X_cap2048": "tab:cyan"}
+ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:purple", "H_ent_anneal": "tab:olive", "I_vel3": "tab:red", "J_ent4": "tab:brown", "K_vel6": "tab:pink", "L_ent3_off23": "tab:orange", "M_ent3_coll23": "tab:blue", "N_ent3_anneal_hi": "tab:gray", "P_ent4_off23": "tab:green", "Q_ent3_both23": "tab:red", "R_ent5_off23": "tab:brown", "S_ent6_off23": "tab:purple", "T_ent5_anneal": "tab:olive", "U_ent5_off2530": "tab:green", "V_ent5_off1520": "tab:blue", "W_ent5_progv1": "tab:orange", "X_cap2048": "tab:cyan", "Y_selfplay": "crimson", "Z_selfplay_half": "teal"}
 
 # progress 未覆盖臂沿用的 config 默认 v1 区间（puffer_drive.yaml 现值，逐字喂 env）。
 PROGRESS_LO_DEFAULT = 2.5e-3

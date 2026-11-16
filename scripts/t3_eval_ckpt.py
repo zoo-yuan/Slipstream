@@ -364,6 +364,8 @@ def main() -> None:
     ap.add_argument("--num-scenarios", type=int, default=400)
     ap.add_argument("--mix-face", action="store_true",
                     help="hazard 四开 + cosim_partner_slots=hazard_slot_capacity（否则干净面：显式 hazard off）")
+    ap.add_argument("--extra-override", action="append", default=None, metavar="KEY=VALUE",
+                    help="追加 Hydra override 到 eval 命令（可多次；如 train.device=cpu train.compile=false）")
     ap.add_argument("--out", default=str(DEFAULT_OUT))
     args = ap.parse_args()
 
@@ -397,6 +399,8 @@ def main() -> None:
         overrides, face_record = build_eval_overrides(
             model_path, face, args.num_scenarios, out_label_dir, output_subdir
         )
+        if args.extra_override:
+            overrides = overrides + list(args.extra_override)
         log_path = logs_dir / f"{label}_{output_subdir}.log"
         log(f"[{label}] 开始 eval：benchmark={args.benchmark} n={args.num_scenarios} face={face}")
         rc = run_eval_subprocess(args.benchmark, overrides, log_path)

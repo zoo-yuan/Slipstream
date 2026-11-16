@@ -1,7 +1,7 @@
 # STATE
 
-As-of: 261fd86（夜间规模战役 III：16× 新冠军 2.978/2.792 @400 场景双面，32× 回落定位峰位）
-（2026-11-13 晨：owner 授权 GPU 窗口收尾；cap2048 OOM 待独占卡；北极星对齐+数据轴裁决输入已入 docs，Apollo bag 路线待 owner 供样）
+As-of: cb4b99e（三门夜班：v4 快照池自博弈代码就绪 + 顶格率指标三门闭环 + goal_speed=3.0 结构性错配发现）
+（2026-11-17 晨：lab42 GPU 被占 watcher 等；64 场景顶格率样本跑中；owner 晨会清单在 .scratch/handoff/2026-11-17-three-gate-night.md）
 约定：AGENTS.md 是放置规则权威；strata 分层自 2026-11-03 启用；TerraZero 复刻 effort 活图在 `.wayfinder/map.md`（已完成）。**裁决真值在 `docs/adr/0001-0007`**（基底/配方v1/执法/运行时独立/奖励区间旋钮谱系/保守吸引子/熵破解配方v3）。
 
 ## Where（现状）
@@ -27,8 +27,10 @@ As-of: 261fd86（夜间规模战役 III：16× 新冠军 2.978/2.792 @400 场景
 
 ## Next（下一步）
 
-- **待 owner**：①nuPlan AWS 注册（val14 外部标定前提；或从上游集群搬 carl_nuplan+地图）；②ADR-0009 候选裁决（规模轴 III 战果：16× 峰位 + 新冠军，是否封冠军/继续容量轴）；③push origin（本地领先 70+ commits）；④GPU 归还后：16xs43 断点续完（76% 在盘，~1.5h）、cap2048 独占卡重试、超长程 lr 退火臂。
-- 增益轴排序（夜战后更新）：容量（OOM 待解）> 自博弈 v4（工程 1-2 天，research note 在案）> 超长程 lr 退火 > 继续堆规模（已过峰）。
+- **待 owner**：①goal_speed 裁决（v5 效率轴：顶格率 0 的根因=任务定义硬钉 3.0 m/s，见 handoff 2026-11-17）；②v4 首跑排期（代码三门就绪；GPU 回归链 watcher 挂 lab42：卡空自动 16×s43→cap2048→V→W）；③SPACeR 命名去化确认（实现为快照池混合非 KL 锚定，不违票 06 裁决）；④nuPlan AWS 注册 / Apollo 采样 bag+地图（双缺口不变）；⑤push origin（本地领先 80+）。
+- **三门夜班交付（cb4b99e）**：SelfplayMixer（8 单测+冒烟，off 路径 RNG 位等价，Y/Z 臂）；speed_attainment.py（三门闭环：独立重算一致+三重交叉全零）；render-CHAMP16 画廊；nuplan-py39 环境（import+读 train db 验证）；64 场景顶格率样本跑中。
+- 已知缺口（验证者发现，见 handoff §3）：smoke 层伙伴来源无断言；Y/Z 与 v3 SPS 不可直比（compile 分裂+probe 不含自博弈）；臂 epoch<interval(50) 时快照池退化。
+- 增益轴排序不变：容量（OOM 待解）> 自博弈 v4（代码就绪）> 超长程 lr 退火 > 堆规模（已过峰）；**新增：v5 效率轴（goal_speed）待裁决**。
 - 「顶格率」指标待建；v3/16× 外部基准验证（val14）数据未到位。
 - 雾区序不变：异质 sim-agent（与 v4 合流）；外部验收；log→map；E1a/E1b。
 

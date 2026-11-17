@@ -1,7 +1,7 @@
 # STATE
 
-As-of: cb4b99e（三门夜班：v4 快照池自博弈代码就绪 + 顶格率指标三门闭环 + goal_speed=3.0 结构性错配发现）
-（2026-11-17 晨：lab42 GPU 被占 watcher 等；64 场景顶格率样本跑中；owner 晨会清单在 .scratch/handoff/2026-11-17-three-gate-night.md）
+As-of: c8ad22f（v5 效率轴三门闭环：goal_speed_mode=lane_limit 内核单点门控写入 + E 系臂 + 纪律门登记；顶格率指标在位）
+（2026-11-17：owner 立项物流效率口径；v4 自博弈与 v5 效率轴均代码就绪等 GPU；SPACeR KL 锚定已采纳待提案；lab42 内核已重建同步）
 约定：AGENTS.md 是放置规则权威；strata 分层自 2026-11-03 启用；TerraZero 复刻 effort 活图在 `.wayfinder/map.md`（已完成）。**裁决真值在 `docs/adr/0001-0007`**（基底/配方v1/执法/运行时独立/奖励区间旋钮谱系/保守吸引子/熵破解配方v3）。
 
 ## Where（现状）

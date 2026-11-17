@@ -1715,6 +1715,8 @@ PyMODINIT_FUNC PyInit_binding(void) {
     PyModule_AddIntConstant(m, "TRAFFIC_I16_FIELDS", TRAFFIC_I16_FIELDS);
     PyModule_AddIntConstant(m, "NUM_REWARD_COEFS", NUM_REWARD_COEFS);
     PyModule_AddIntConstant(m, "REWARD_COEF_PROGRESS", REWARD_COEF_PROGRESS);
+    PyModule_AddIntConstant(m, "GOAL_SPEED_MODE_CONSTANT", GOAL_SPEED_MODE_CONSTANT);
+    PyModule_AddIntConstant(m, "GOAL_SPEED_MODE_LANE_LIMIT", GOAL_SPEED_MODE_LANE_LIMIT);
     PyModule_AddIntConstant(m, "GOAL_REGEN_FINITE", GOAL_REGEN_FINITE);
     PyModule_AddIntConstant(m, "GOAL_REGEN_ROLLING", GOAL_REGEN_ROLLING);
     PyModule_AddIntConstant(m, "GOAL_SOURCE_ROUTE", GOAL_SOURCE_ROUTE);

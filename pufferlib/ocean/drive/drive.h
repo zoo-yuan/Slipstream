@@ -346,6 +346,7 @@ struct Drive {
     float max_goal_spacing;
     float goal_heading_max_deg;     // 0 disables the successive-waypoint heading constraint
     int goal_speed_randomization;   // 0 pins the goal-speed coef to goal_speed (paper: v_goal fixed)
+    int goal_speed_mode;             // GOAL_SPEED_MODE_*: constant (default) or per-step lane speed limit (v5)
     float conditioning_accel_scale; // eval C_acc: scales the positive accel cap (ACCEL_LONG_LIMIT[1]); 1.0 = paper eval
     float conditioning_speed_scale; // training C_vel ~ X(a): speed cap = base_max_speed_mps * [1/a, a]; 1.5 = paper
     int goal_reach_requires_speed;  // 1: final goal is consumed only below goal speed (paper semantics)
@@ -5473,6 +5474,22 @@ static void compute_metrics(Drive *env, int agent_idx, int log_idx) {
         = (agent->sim_speed > target_speed + env->overspeed_tolerance_mps) ? 1.0f : 0.0f;
     if (env->compute_eval_metrics) {
         agent_log->speed_violation_sum += fmaxf(agent->sim_speed - target_speed, 0.0f) * env->dt;
+    }
+
+    // v5 goal_speed_mode=lane_limit: single gated write pinning the goal-speed coef (v_goal)
+    // to the same target_speed expression the overspeed metric uses, so v_goal == the speeding
+    // target by construction. Off-lane / unknown-limit steps fall back to
+    // UNKNOWN_LANE_SPEED_LIMIT_MPS (=15, set above). No cap at 20: REWARD_BOUNDS-normalized
+    // consumers clamp, and the final-goal gate / speeding check want the true limit. The write
+    // is O(1), malloc-free, consumes no RNG (generate_reward_coefs stream untouched), and runs
+    // before every consumer in the same step: the final-goal speed gate below (same function),
+    // compute_rewards' speeding check, and write_reward_target_obs' conditioning column
+    // (c_step order: compute_metrics -> compute_rewards -> compute_observations).
+    // goal_speed_mode=constant (default) skips the write entirely, keeping the stream
+    // bit-identical; mode takes priority over goal_speed_randomization (rejected in drive.py
+    // when both are live, so the spawn-time draw can never mislead a reset-frame reader).
+    if (env->goal_speed_mode == GOAL_SPEED_MODE_LANE_LIMIT) {
+        agent->reward_coefs[REWARD_COEF_GOAL_SPEED] = target_speed;
     }
 
     // Velocity metric - forward progress aligned with lane

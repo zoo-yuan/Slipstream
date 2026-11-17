@@ -2118,6 +2118,12 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     }
     env->goal_speed = (float) unpack(kwargs, "goal_speed");
     env->goal_speed_randomization = (int) unpack(kwargs, "goal_speed_randomization");
+    env->goal_speed_mode = (int) unpack(kwargs, "goal_speed_mode");
+    if (env->goal_speed_mode != GOAL_SPEED_MODE_CONSTANT && env->goal_speed_mode != GOAL_SPEED_MODE_LANE_LIMIT) {
+        PyErr_Format(PyExc_ValueError, "goal_speed_mode must be GOAL_SPEED_MODE_CONSTANT or GOAL_SPEED_MODE_LANE_LIMIT. Got: %d",
+                     env->goal_speed_mode);
+        return -1;
+    }
     env->conditioning_accel_scale = (float) unpack(kwargs, "conditioning_accel_scale");
     env->conditioning_speed_scale = (float) unpack(kwargs, "conditioning_speed_scale");
     if (!(env->conditioning_speed_scale >= 1.0f) || !isfinite(env->conditioning_speed_scale)) {
@@ -2293,6 +2299,17 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->simulation_mode = (int) unpack(kwargs, "simulation_mode");
     env->reward_conditioning = (bool) unpack(kwargs, "reward_conditioning");
     env->reward_randomization = (bool) unpack(kwargs, "reward_randomization");
+    if (env->goal_speed_mode == GOAL_SPEED_MODE_LANE_LIMIT && env->reward_randomization
+        && env->goal_speed_randomization) {
+        // Kernel-side mirror of the drive.py constructor fail-fast: lane_limit's per-step
+        // coef write overrides the spawn-time randomization draw, so the combination would
+        // silently mislead any reset-frame reader of the goal-speed coef.
+        PyErr_SetString(
+            PyExc_ValueError,
+            "goal_speed_mode=lane_limit overrides goal_speed_randomization per step; disable "
+            "goal_speed_randomization or use goal_speed_mode=constant");
+        return -1;
+    }
     env->reward_log_sampling = (bool) unpack(kwargs, "reward_log_sampling");
     env->compute_eval_metrics = (bool) unpack(kwargs, "compute_eval_metrics");
     env->eval_mode = (int) unpack(kwargs, "eval_mode");

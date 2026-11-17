@@ -201,8 +201,24 @@ ARMS: dict[str, dict[str, float | str]] = {
                           "train.selfplay_p_learner": 0.5, "train.selfplay_p_ref": 0.3,
                           "train.selfplay_p_snapshot": 0.2,
                           "train.selfplay_ref_model_path": "artifacts/t3-R4x/ckpt/R_ent5_off23/models/model_puffer_drive_007424.pt"},
+    # v5 效率轴（提案 §2c 重写版，评审必改①：goal 项主导是既有事实——两模式中间球同速率发
+    # reward_goal=1.0，与 v_goal 无关；lane_limit 的增量只是①final goal 速度门 3→limit
+    # （goal_reach_requires_speed=true 训练生效）＋②条件化列变活。末段减速解除＋目标可观测
+    # 放大既存冲刺（~200×/velocity、~66×/progress 主导量级），故谱系联动臂护安全权重，
+    # E1/E2/E3 首跑必须同批三臂齐上，安全门判读绑 E2/E3 对照而非 E1 单点）。
+    # 基座 = R 冠军配方（progress[1.25e-3,1.25e-2] + ent0.05 + off[2,3]）。
+    # E1 = 任务定义纯对照（仅 goal_speed_mode）；E2 = 压 goal 主导护安全权重；E3 = per-meter
+    # 速度压力回 v1 剂量。注意：reward_goal 非 eval 验收门输入（eval 冻结策略，门 =
+    # attainment/collision/dnf 全来自 env log），E2 的 0.3 只影响训练谱系与 return 诊断列。
+    "E1_lane": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.05,
+                 "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0, "goal_speed_mode": "lane_limit"},
+    "E2_lane_goal03": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.05,
+                         "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0, "goal_speed_mode": "lane_limit",
+                         "reward_goal": 0.3},
+    "E3_lane_progv1": {"reward_progress_lo": 2.5e-3, "reward_progress_hi": 2.5e-2, "train.ent_coef": 0.05,
+                         "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0, "goal_speed_mode": "lane_limit"},
 }
-ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:purple", "H_ent_anneal": "tab:olive", "I_vel3": "tab:red", "J_ent4": "tab:brown", "K_vel6": "tab:pink", "L_ent3_off23": "tab:orange", "M_ent3_coll23": "tab:blue", "N_ent3_anneal_hi": "tab:gray", "P_ent4_off23": "tab:green", "Q_ent3_both23": "tab:red", "R_ent5_off23": "tab:brown", "S_ent6_off23": "tab:purple", "T_ent5_anneal": "tab:olive", "U_ent5_off2530": "tab:green", "V_ent5_off1520": "tab:blue", "W_ent5_progv1": "tab:orange", "X_cap2048": "tab:cyan", "Y_selfplay": "crimson", "Z_selfplay_half": "teal"}
+ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:purple", "H_ent_anneal": "tab:olive", "I_vel3": "tab:red", "J_ent4": "tab:brown", "K_vel6": "tab:pink", "L_ent3_off23": "tab:orange", "M_ent3_coll23": "tab:blue", "N_ent3_anneal_hi": "tab:gray", "P_ent4_off23": "tab:green", "Q_ent3_both23": "tab:red", "R_ent5_off23": "tab:brown", "S_ent6_off23": "tab:purple", "T_ent5_anneal": "tab:olive", "U_ent5_off2530": "tab:green", "V_ent5_off1520": "tab:blue", "W_ent5_progv1": "tab:orange", "X_cap2048": "tab:cyan", "Y_selfplay": "crimson", "Z_selfplay_half": "teal", "E1_lane": "gold", "E2_lane_goal03": "darkviolet", "E3_lane_progv1": "deeppink"}
 
 # progress 未覆盖臂沿用的 config 默认 v1 区间（puffer_drive.yaml 现值，逐字喂 env）。
 PROGRESS_LO_DEFAULT = 2.5e-3

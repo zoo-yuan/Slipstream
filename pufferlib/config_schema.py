@@ -165,6 +165,17 @@ class GoalSource(Enum):
     gt_map = 4
 
 
+class GoalSpeedMode(Enum):
+    # v5: "constant" pins v_goal to env.goal_speed (default, bit-identical stream);
+    # "lane_limit" pins it to the lane's live speed limit per step (kernel write in
+    # compute_metrics). Lane-limit evaluation faces must declare the mode in their
+    # benchmark env section; the checkpoint/benchmark mode mismatch fails fast in
+    # evaluation_utils. nuplan/womd benchmarks stay constant (their unknown map limits
+    # fall back to 15 m/s, which would contaminate the speed-attainment denominator).
+    constant = 0
+    lane_limit = 1
+
+
 class PackageName(Enum):
     ocean = 0
 
@@ -332,6 +343,7 @@ class DriveEnvConfig:
     goal_radius: float = _constrained_field(POSITIVE_NUMBER_CONSTRAINT)
     goal_speed: float = _constrained_field(NONNEGATIVE_NUMBER_CONSTRAINT)
     goal_speed_randomization: bool = MISSING
+    goal_speed_mode: GoalSpeedMode = MISSING
     goal_reach_requires_speed: bool = MISSING
     num_goals: int = _constrained_field(POSITIVE_INT_CONSTRAINT)
     min_goal_spacing: float = _constrained_field(NONNEGATIVE_NUMBER_CONSTRAINT)
@@ -530,6 +542,10 @@ class EvaluationConfig:
     goal_regen_mode: GoalRegen | None = MISSING
     goal_source: GoalSource | None = MISSING
     goal_speed: float | None = _constrained_field(NONNEGATIVE_NUMBER_CONSTRAINT)
+    # v5: overrides env.goal_speed_mode of every selected benchmark ("constant" | "lane_limit");
+    # null keeps the benchmark's own value (explicit override also bypasses the
+    # checkpoint/benchmark mode-consistency fail-fast as a deliberate operator action).
+    goal_speed_mode: GoalSpeedMode | None = MISSING
     min_goal_spacing: float | None = _constrained_field(POSITIVE_NUMBER_CONSTRAINT)
     max_goal_spacing: float | None = _constrained_field(POSITIVE_NUMBER_CONSTRAINT)
     obs_slots_partners_n: int | None = _constrained_field(POSITIVE_INT_CONSTRAINT)

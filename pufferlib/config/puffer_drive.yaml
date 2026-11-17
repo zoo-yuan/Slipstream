@@ -206,6 +206,12 @@ env:
   goal_speed: 3.0
   # true: goal-speed coef ~ U(0, 20) per agent under reward_randomization; false: pinned to goal_speed (GIGAFLOW v_goal = 3)
   goal_speed_randomization: false
+  # v5: "constant" pins v_goal to goal_speed above (default, bit-identical stream); "lane_limit"
+  # pins it to the lane's live speed limit every step (kernel write in compute_metrics; the
+  # final-goal speed gate, speeding check and conditioning obs follow). Mode takes priority over
+  # goal_speed_randomization, so lane_limit + reward_randomization + goal_speed_randomization
+  # fails fast at construction. Eval faces select the mode in config/evaluation/benchmark.yaml.
+  goal_speed_mode: "constant"
   # true: the final goal is only consumed below goal speed (GIGAFLOW R_goal); false: consumed on entry, reward gated
   goal_reach_requires_speed: true
   # Number of target waypoints in the observation (including goal)
@@ -482,6 +488,10 @@ eval:
   goal_source: null
   # Overrides env.goal_speed of every selected benchmark; null keeps the benchmark's value.
   goal_speed: null
+  # v5: Overrides env.goal_speed_mode ("constant" | "lane_limit") of every selected benchmark;
+  # null keeps the benchmark's own value. A non-null value is a deliberate operator override
+  # and bypasses the checkpoint/benchmark mode-consistency fail-fast in evaluation_utils.
+  goal_speed_mode: null
   # Override env.min_goal_spacing / env.max_goal_spacing (meters) of every selected benchmark; null keeps the benchmark's value.
   min_goal_spacing: null
   max_goal_spacing: null

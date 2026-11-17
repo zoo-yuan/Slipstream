@@ -112,6 +112,16 @@
 #define GOAL_SOURCE_EXTERNAL 3 // co-sim: goal windows pushed by the external sim (c_set_agent_goals)
 #define GOAL_SOURCE_GT_MAP 4   // logged-trajectory goals projected onto the nearest co-directional lane center
 
+// v5 goal_speed_mode: how the per-agent goal-speed coef (v_goal) is set.
+// CONSTANT (default) keeps the generate_reward_coefs spawn value bit-identical;
+// LANE_LIMIT pins it to the lane's live speed limit every compute_metrics call
+// (drive.h SPEED_LIMIT block), so the final-goal speed gate, the speeding check
+// and the conditioning obs all follow the lane limit. Mode takes priority over
+// goal_speed_randomization (the per-step write overwrites the spawn-time draw), so
+// that combination is rejected in drive.py at construction time.
+#define GOAL_SPEED_MODE_CONSTANT 0
+#define GOAL_SPEED_MODE_LANE_LIMIT 1
+
 // Dynamics model
 #define DYNAMICS_MODEL_CLASSIC 0
 #define DYNAMICS_MODEL_JERK 1

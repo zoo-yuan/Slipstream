@@ -82,6 +82,7 @@ class Drive(pufferlib.PufferEnv):
         speed_limit_random_max_mps=36.11,
         goal_speed=3.0,
         goal_speed_randomization=True,
+        goal_speed_mode="constant",
         conditioning_accel_scale=1.0,
         conditioning_speed_scale=1.5,
         goal_reach_requires_speed=False,
@@ -247,6 +248,21 @@ class Drive(pufferlib.PufferEnv):
             )
         self.goal_speed = float(goal_speed)
         self.goal_speed_randomization = int(bool(goal_speed_randomization))
+        # v5 goal_speed_mode: "constant" keeps the generate_reward_coefs spawn value
+        # (default, bit-identical stream); "lane_limit" pins the per-agent goal-speed coef
+        # (v_goal) to the lane's live speed limit every step inside compute_metrics
+        # (drive.h SPEED_LIMIT block), so the final-goal speed gate, the speeding check and
+        # the conditioning obs column all follow the lane limit. Mode takes priority over
+        # goal_speed_randomization: the per-step write overwrites the spawn-time draw, so
+        # that combination is rejected below (misleading reset-frame reads otherwise).
+        goal_speed_mode_values = {
+            "constant": binding.GOAL_SPEED_MODE_CONSTANT,
+            "lane_limit": binding.GOAL_SPEED_MODE_LANE_LIMIT,
+        }
+        if goal_speed_mode not in goal_speed_mode_values:
+            raise ValueError(f"goal_speed_mode must be one of {sorted(goal_speed_mode_values)}, got {goal_speed_mode!r}")
+        self.goal_speed_mode = goal_speed_mode
+        self.goal_speed_mode_flag = goal_speed_mode_values[goal_speed_mode]
         # Eval-time C_acc conditioning coefficient (training samples it in REWARD_BOUNDS[REWARD_COEF_ACC]).
         self.conditioning_speed_scale = float(conditioning_speed_scale)
         if not np.isfinite(self.conditioning_speed_scale) or self.conditioning_speed_scale < 1.0:
@@ -260,6 +276,14 @@ class Drive(pufferlib.PufferEnv):
         self.goal_reach_requires_speed = int(bool(goal_reach_requires_speed))
         self.reward_conditioning = reward_conditioning
         self.reward_randomization = reward_randomization
+        if self.goal_speed_mode == "lane_limit" and self.reward_randomization and self.goal_speed_randomization:
+            # lane_limit overrides goal_speed_randomization per step (kernel write in
+            # compute_metrics), so the spawn-time draw is dead but still observable on the
+            # reset frame; fail fast instead of documenting a silent override.
+            raise ValueError(
+                "goal_speed_mode='lane_limit' overrides goal_speed_randomization per step; set "
+                "goal_speed_randomization=false or goal_speed_mode='constant'"
+            )
         self.reward_log_sampling = reward_log_sampling
         self.compute_eval_metrics = compute_eval_metrics
         self.shared_network = shared_network
@@ -801,6 +825,7 @@ class Drive(pufferlib.PufferEnv):
             "speed_limit_random_max_mps": self.speed_limit_random_max_mps,
             "goal_speed": self.goal_speed,
             "goal_speed_randomization": self.goal_speed_randomization,
+            "goal_speed_mode": self.goal_speed_mode_flag,
             "conditioning_accel_scale": self.conditioning_accel_scale,
             "conditioning_speed_scale": self.conditioning_speed_scale,
             "goal_reach_requires_speed": self.goal_reach_requires_speed,

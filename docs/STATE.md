@@ -27,7 +27,7 @@ As-of: cb4b99e（三门夜班：v4 快照池自博弈代码就绪 + 顶格率指
 
 ## Next（下一步）
 
-- **待 owner**：①goal_speed 裁决（v5 效率轴：顶格率 0 的根因=任务定义硬钉 3.0 m/s，见 handoff 2026-11-17）；②v4 首跑排期（代码三门就绪；GPU 回归链 watcher 挂 lab42：卡空自动 16×s43→cap2048→V→W）；③**owner 已裁决（2026-11-17）：SPACeR KL/似然奖励锚定采纳**（更新票 06 旧口径）——与 snapshot-pool 伙伴混合正交可叠加：KL 锚定改损失/奖励侧（β·KL+α·log π_ref，复用 SelfplayMixer 的 ref 副本基建），伙伴混合改环境侧；新工程待门1提案；④nuPlan AWS 注册 / Apollo 采样 bag+地图（双缺口不变）；⑤push origin（本地领先 85+）。
+- **待 owner**：①v5 效率轴已立项（owner 2026-11-17：物流配送，效率与安全同等，效率=流畅+顶限速；goal_speed=3.0 与真实需求相去甚远）——门1 提案进行中（.scratch/proposals/v5-goal-speed-proposal.md，goal_speed_mode=lane_limit 动态化+奖励联动+扫臂）；②v4 首跑排期（代码三门就绪；GPU 回归链 watcher 挂 lab42）；③**SPACeR KL/似然奖励锚定已采纳**（更新票 06 旧口径，与 snapshot-pool 正交可叠加，待门1提案）；④nuPlan AWS 注册 / Apollo 采样 bag+地图（双缺口不变，G1 转换器须保留 lane speed_limit 字段）；⑤push origin（本地领先 87+）。
 - **三门夜班交付（cb4b99e）**：SelfplayMixer（8 单测+冒烟，off 路径 RNG 位等价，Y/Z 臂）；speed_attainment.py（三门闭环：独立重算一致+三重交叉全零）；render-CHAMP16 画廊；nuplan-py39 环境（import+读 train db 验证）；64 场景顶格率样本跑中。
 - 已知缺口（验证者发现，见 handoff §3）：smoke 层伙伴来源无断言；Y/Z 与 v3 SPS 不可直比（compile 分裂+probe 不含自博弈）；臂 epoch<interval(50) 时快照池退化。
 - 增益轴排序不变：容量（OOM 待解）> 自博弈 v4（代码就绪）> 超长程 lr 退火 > 堆规模（已过峰）；**新增：v5 效率轴（goal_speed）待裁决**。

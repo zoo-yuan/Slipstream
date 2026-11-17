@@ -1,6 +1,6 @@
 # STATE
 
-As-of: c8ad22f（v5 效率轴三门闭环：goal_speed_mode=lane_limit 内核单点门控写入 + E 系臂 + 纪律门登记；顶格率指标在位）
+As-of: 6b3a527（SPACeR 锚定三门闭环：β·KL+α·logπ_ref，校准实测 1.944 nats，S2 α 回填；v5 E1 首验在盘 2.21/1.61，E2/E3 链在途 3060）
 （2026-11-17：owner 立项物流效率口径；v4 自博弈与 v5 效率轴均代码就绪等 GPU；SPACeR KL 锚定已采纳待提案；lab42 内核已重建同步）
 约定：AGENTS.md 是放置规则权威；strata 分层自 2026-11-03 启用；TerraZero 复刻 effort 活图在 `.wayfinder/map.md`（已完成）。**裁决真值在 `docs/adr/0001-0007`**（基底/配方v1/执法/运行时独立/奖励区间旋钮谱系/保守吸引子/熵破解配方v3）。
 

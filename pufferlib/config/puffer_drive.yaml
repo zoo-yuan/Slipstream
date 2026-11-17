@@ -454,6 +454,21 @@ train:
   selfplay_snapshot_pool_size: 4
   # Epochs between snapshot pool insertions (after each completed training update).
   selfplay_snapshot_interval: 50
+  # --- SPACeR anchor (β·KL + α·logπ_ref anchoring; defaults are a pure no-op) ---
+  # PPO loss += spacer_kl_coef * forward KL(π_θ‖π_ref) and rollout rewards +=
+  # spacer_reward_coef * clamp(logπ_ref(a|s), -spacer_logprob_floor, 0), both against
+  # a frozen reference. One key, two roles: the reference reuses
+  # selfplay_ref_model_path above (shared with the self-play ref when both are on).
+  spacer_kl_coef: 0.0
+  # Linearly anneal spacer_kl_coef to spacer_kl_coef_final over the last
+  # (1 - spacer_kl_coef_anneal_start_frac) of training (mirrors ent_coef annealing).
+  spacer_kl_coef_anneal: false
+  spacer_kl_coef_final: 0.0
+  spacer_kl_coef_anneal_start_frac: 0.75
+  # Reward-side anchor coefficient α, in raw reward units (normalize_rewards must stay false).
+  spacer_reward_coef: 0.0
+  # Floor for -logπ_ref per transition, in nats (review裁定 2-4 取中； guards GAE poisoning).
+  spacer_logprob_floor: 3.0
 sweep:
   method: Protein
   metric: score

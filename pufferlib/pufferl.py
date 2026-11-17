@@ -101,6 +101,10 @@ PROFILE_ACK = b"ack\n\0"
 # Sim-only profiles define a cycle as a fixed number of environment steps.
 PROFILE_SIM_STEPS_PER_CYCLE = 16_384
 
+# SPACeR anchor reward: rows per no-grad ref forward over the rollout buffer.
+# Chunked once per buffer (never per env step) per the v4 SPS findings.
+_ANCHOR_FORWARD_CHUNK_ROWS = 16_384
+
 
 def torch_device(device):
     if isinstance(device, int):
@@ -136,6 +140,35 @@ def logits_to_float(logits):
     return logits.float()
 
 
+def spacer_forward_kl(logits, ref_logits):
+    """SPACeR anchor forward KL(π_θ‖π_ref) = Σ_c exp(logp_θ)·(logp_θ − logp_ref).
+
+    Mode-covering direction: the learner is pulled to cover every mode π_ref
+    has, so a flipped (reverse) term would silently mode-seek and drop ref
+    modes. Pinned by test_kl_term_exact_value's asymmetric fixture; do not flip.
+    Both logits are cast to fp32 before log_softmax (bf16 logsumexp differences
+    would fake the anchor signal; logits_to_float precedent).
+    """
+    logp = torch.log_softmax(logits.float(), dim=-1)
+    logp_ref = torch.log_softmax(ref_logits.float(), dim=-1)
+    return (logp.exp() * (logp - logp_ref)).sum(-1).mean()
+
+
+def build_frozen_ref_policy(uncompiled_policy, path):
+    """Load a frozen reference policy from a checkpoint path.
+
+    Cleaned like a resume checkpoint so DDP/compile prefixes strip; strict
+    load_state_dict fails fast on key/shape mismatch (X_cap2048 backbones do
+    not interload with 1024 ones). Shared by the self-play mixer's ref role and
+    the SPACeR anchor (D1): construct it once and hand the same object to both.
+    """
+    ref_state = clean_policy_state_dict(torch.load(path, map_location="cpu"))
+    ref_policy = copy.deepcopy(uncompiled_policy).eval()
+    ref_policy.requires_grad_(False)
+    ref_policy.load_state_dict(ref_state)
+    return ref_policy
+
+
 class SelfplayMixer:
     """v4 snapshot-pool self-play rollout controller (reference-anchored snapshot pool).
 
@@ -155,7 +188,7 @@ class SelfplayMixer:
     ROLE_LEARNER = 0
     ROLE_REF = 1
 
-    def __init__(self, uncompiled_policy, total_agents, config, seed, device):
+    def __init__(self, uncompiled_policy, total_agents, config, seed, device, ref_policy=None):
         p_learner = config["selfplay_p_learner"]
         p_ref = config["selfplay_p_ref"]
         self.uncompiled_policy = uncompiled_policy
@@ -191,13 +224,12 @@ class SelfplayMixer:
 
         self.ref_policy = None
         if p_ref > 0.0:
-            # Cleaned like a resume checkpoint; key/shape mismatch fails fast.
-            ref_state = clean_policy_state_dict(
-                torch.load(config["selfplay_ref_model_path"], map_location="cpu")
-            )
-            self.ref_policy = copy.deepcopy(uncompiled_policy).eval()
-            self.ref_policy.requires_grad_(False)
-            self.ref_policy.load_state_dict(ref_state)
+            if ref_policy is not None:
+                # Shared with the SPACeR anchor (D1): one disk load, one policy
+                # copy; the anchor owner (PuffeRL) already froze it.
+                self.ref_policy = ref_policy
+            else:
+                self.ref_policy = build_frozen_ref_policy(uncompiled_policy, config["selfplay_ref_model_path"])
 
     @torch.no_grad()
     def forward_batch(self, obs, roles, state, learner_policy, env_continuous):
@@ -381,12 +413,31 @@ class PuffeRL:
             self.policy.forward_eval = torch.compile(self.uncompiled_policy.forward_eval, **compile_kwargs)
             pufferlib.pytorch.sample_logits = torch.compile(pufferlib.pytorch.sample_logits, **compile_kwargs)
 
+        # SPACeR anchor (D1): one frozen ref shared by the KL/reward anchor and the
+        # self-play mixer. Built only when an anchor knob is on, so the off path
+        # (β=α=0 or keys absent) consumes no RNG and stays bit-identical (D4).
+        # Reuses train.selfplay_ref_model_path (one key, two roles).
+        self.anchor_ref = None
+        spacer_kl_coef = config.get("spacer_kl_coef", 0.0)
+        spacer_reward_coef = config.get("spacer_reward_coef", 0.0)
+        if spacer_kl_coef > 0.0 or spacer_reward_coef > 0.0:
+            if config.get("normalize_rewards", False):
+                raise ValueError(
+                    "train.normalize_rewards must be false when the SPACeR anchor is on "
+                    "(spacer_kl_coef/spacer_reward_coef > 0): the anchor reward is "
+                    "calibrated in raw reward units and normalize_rewards would "
+                    "silently rescale it (review F2)"
+                )
+            self.anchor_ref = build_frozen_ref_policy(self.uncompiled_policy, config["selfplay_ref_model_path"])
+
         # v4 snapshot-pool self-play: the mixer exists only when the learner cedes any
         # agent slot (selfplay_p_learner < 1.0). The off path draws no roles and
         # consumes no RNG, keeping the v3 rollout bitstream intact.
         self.selfplay = None
         if config.get("selfplay_p_learner", 1.0) < 1.0:
-            self.selfplay = SelfplayMixer(self.uncompiled_policy, total_agents, config, seed, device)
+            self.selfplay = SelfplayMixer(
+                self.uncompiled_policy, total_agents, config, seed, device, ref_policy=self.anchor_ref
+            )
 
         # Optimizer
         if config["optimizer"] == "adam":
@@ -673,6 +724,10 @@ class PuffeRL:
         profile("train", epoch)
         profile("train_misc", epoch, nest=True)
         losses = defaultdict(float)
+        # SPACeR anchor (D3): inject α·clamp(logπ_ref(a|s), -floor, 0) into the fresh
+        # rollout rewards exactly once per train(), before GAE/advantages run. A
+        # no-op on the off path (α=0), so buffers and RNG stay bit-identical (D4).
+        self._apply_anchor_reward(losses)
         if config["use_rnn"]:
             self._train_ppo_trajectory(losses, profile, epoch)
         else:
@@ -723,6 +778,63 @@ class PuffeRL:
             return ent_coef
         anneal_frac = (progress - start_frac) / max(1.0 - start_frac, 1e-8)
         return ent_coef + anneal_frac * (config["ent_coef_final"] - ent_coef)
+
+    def _current_spacer_kl_coef(self):
+        # SPACeR β anneal, mirroring _current_ent_coef line for line (late-phase
+        # lock-in escape, proposal §5-4; T_ent5_anneal precedent for the shape).
+        config = self.config
+        kl_coef = config["spacer_kl_coef"]
+        if not config["spacer_kl_coef_anneal"]:
+            return kl_coef
+        progress = min(self.global_step / max(config["total_timesteps"], 1), 1.0)
+        start_frac = config["spacer_kl_coef_anneal_start_frac"]
+        if progress <= start_frac:
+            return kl_coef
+        anneal_frac = (progress - start_frac) / max(1.0 - start_frac, 1e-8)
+        return kl_coef + anneal_frac * (config["spacer_kl_coef_final"] - kl_coef)
+
+    @torch.no_grad()
+    def _apply_anchor_reward(self, losses):
+        """D3: add α·clamp(logπ_ref(a|s), −floor, 0)·masks to the rollout rewards.
+
+        Runs after evaluate() rewrote every reward row and before GAE, so each
+        transition is anchored exactly once and evaluate() itself is untouched
+        (on/off bitstream identity, D4). One no-grad chunked ref forward over the
+        whole buffer — not per env step (v4 SPS findings). ``masks`` gates the
+        injection to ego rows; partner rows stay out and done rows still count
+        (GAE truncates on terminals). The clamp floors rare-action poisoning at
+        spacer_logprob_floor nats (review F1); anchor_reward_min is the sentinel.
+        """
+        config = self.config
+        alpha = config.get("spacer_reward_coef", 0.0)
+        if alpha <= 0.0 or self.anchor_ref is None:
+            return
+        device = config["device"]
+        floor = config.get("spacer_logprob_floor", 3.0)
+        obs_shape = self.vecenv.single_observation_space.shape
+        flat_obs = self.observations.reshape(-1, *obs_shape)
+        flat_actions = self.actions.reshape(-1)
+        flat_masks = self.masks.reshape(-1).bool()
+        injected = torch.zeros(flat_masks.numel(), dtype=torch.float32, device=flat_masks.device)
+        state = dict(action=None, lstm_h=None, lstm_c=None)
+        for start in range(0, flat_obs.shape[0], _ANCHOR_FORWARD_CHUNK_ROWS):
+            rows = slice(start, start + _ANCHOR_FORWARD_CHUNK_ROWS)
+            chunk_obs = flat_obs[rows]
+            if config["cpu_offload"]:
+                chunk_obs = chunk_obs.to(device, non_blocking=True)
+            if self.compress_observations:
+                chunk_obs = chunk_obs.float()
+            logits, _ = self.anchor_ref.forward_eval(chunk_obs, state)
+            # Same quantity the PPO logprobs buffer holds: log_softmax gathered
+            # at the stored sampled action (pytorch.py log_prob precedent).
+            logp_ref = torch.log_softmax(logits_to_float(logits), dim=-1)
+            logp_a = logp_ref.gather(-1, flat_actions[rows].long().unsqueeze(-1)).squeeze(-1)
+            injected[rows] = alpha * logp_a.float().clamp(min=-floor, max=0.0)
+        self.rewards += (injected * flat_masks).reshape(self.rewards.shape).to(self.rewards.dtype)
+        active = injected[flat_masks]
+        if active.numel() > 0:
+            losses["anchor_reward_mean"] = active.mean()
+            losses["anchor_reward_min"] = active.min()
 
     def _ppo_loss(self, mb_obs, mb_actions, mb_logprobs, mb_values, mb_returns, mb_adv, adv_weights=None):
         config = self.config
@@ -782,19 +894,36 @@ class PuffeRL:
         ent_coef = self._current_ent_coef()
         loss = pg_loss + config["vf_coef"] * v_loss - ent_coef * entropy_loss
 
+        # SPACeR anchor (D2): β_eff·forward KL(π_θ‖π_ref) appended after the
+        # assembled loss. Gradient flows only through π_θ; the ref forward is
+        # no-grad and both log-softmaxes run in fp32 (spacer_forward_kl).
+        spacer_kl_coef = self._current_spacer_kl_coef() if self.anchor_ref is not None else 0.0
+        kl_to_ref = None
+        if spacer_kl_coef > 0.0:
+            with torch.no_grad():
+                ref_logits, _ = self.anchor_ref.forward_eval(mb_obs, state)
+            kl_to_ref = spacer_forward_kl(logits, logits_to_float(ref_logits))
+            loss = loss + spacer_kl_coef * kl_to_ref
+
+        stats = {
+            "policy_loss": pg_loss.detach(),
+            "value_loss": v_loss.detach(),
+            "entropy": entropy_loss.detach(),
+            "ent_coef": ent_coef,
+            "old_approx_kl": old_approx_kl,
+            "approx_kl": approx_kl,
+            "clipfrac": clipfrac,
+        }
+        if kl_to_ref is not None:
+            # Logging value clamps floating-point negative zeros; the loss keeps
+            # the raw term so the gradient is untouched (D2).
+            stats["kl_to_ref"] = kl_to_ref.detach().clamp_min(0.0)
+            stats["anchor_kl_coef"] = spacer_kl_coef
         return (
             loss,
             newvalue,
             ratio,
-            {
-                "policy_loss": pg_loss.detach(),
-                "value_loss": v_loss.detach(),
-                "entropy": entropy_loss.detach(),
-                "ent_coef": ent_coef,
-                "old_approx_kl": old_approx_kl,
-                "approx_kl": approx_kl,
-                "clipfrac": clipfrac,
-            },
+            stats,
         )
 
     def _clip_gradients(self, losses):
@@ -1010,8 +1139,21 @@ class PuffeRL:
                 self.optimizer.zero_grad()
 
         if total_minibatches > 0:
-            for key in ("policy_loss", "value_loss", "entropy", "ent_coef", "old_approx_kl", "approx_kl", "clipfrac"):
-                losses[key] /= total_minibatches
+            # kl_to_ref/anchor_kl_coef only exist when the anchor is on; guard so
+            # the off path never grows spurious zero metric keys (D4).
+            for key in (
+                "policy_loss",
+                "value_loss",
+                "entropy",
+                "ent_coef",
+                "old_approx_kl",
+                "approx_kl",
+                "clipfrac",
+                "kl_to_ref",
+                "anchor_kl_coef",
+            ):
+                if key in losses:
+                    losses[key] /= total_minibatches
 
         y_pred = flat_values[valid_idx]
         y_true = flat_returns[valid_idx]

@@ -521,6 +521,18 @@ class TrainingConfig:
     selfplay_ref_model_path: str | None = MISSING
     selfplay_snapshot_pool_size: int = _constrained_field(POSITIVE_INT_CONSTRAINT)
     selfplay_snapshot_interval: int = _constrained_field(POSITIVE_INT_CONSTRAINT)
+    # SPACeR anchor (spacer-anchor proposal D1-D7 + review musts 1-5): PPO loss
+    # β·forward KL(π_θ‖π_ref) plus reward α·clamp(logπ_ref(a|s), −floor, 0).
+    # Reuses selfplay_ref_model_path as the frozen reference (one key, two roles);
+    # defaults are a pure no-op (β=α=0 → no ref load, bit-identical off path).
+    spacer_kl_coef: float = _constrained_field(NONNEGATIVE_NUMBER_CONSTRAINT)
+    spacer_kl_coef_anneal: bool = MISSING
+    spacer_kl_coef_final: float = _constrained_field(NONNEGATIVE_NUMBER_CONSTRAINT)
+    spacer_kl_coef_anneal_start_frac: float = _constrained_field(PROBABILITY_CONSTRAINT)
+    spacer_reward_coef: float = _constrained_field(NONNEGATIVE_NUMBER_CONSTRAINT)
+    # Review F1/must 3: 2-4 nats, midpoint 3.0 — floors rare-action poisoning
+    # (−logπ_ref is unbounded) without sparing the dominant 4.6-10 nat region.
+    spacer_logprob_floor: float = _constrained_field(POSITIVE_NUMBER_CONSTRAINT)
     # Derived by load_config from rnn_name and intentionally absent from YAML.
     use_rnn: bool = MISSING
 
@@ -895,6 +907,31 @@ def _validate_cross_field_constraints(config, context):
                 "cannot be enabled with self-play (selfplay_p_learner < 1); "
                 "LSTM state partitioning across roles is out of scope",
             )
+
+        # --- SPACeR anchor invariants (proposal §4; review musts 3/5) ---
+        spacer_active = train["spacer_kl_coef"] > 0.0 or train["spacer_reward_coef"] > 0.0
+        if spacer_active:
+            if train["selfplay_ref_model_path"] is None:
+                _raise_config_error(
+                    context,
+                    "train.selfplay_ref_model_path",
+                    "is required when train.spacer_kl_coef > 0 or train.spacer_reward_coef > 0 "
+                    "(SPACeR anchor reuses this path as its frozen reference)",
+                )
+            if train["use_rnn"]:
+                _raise_config_error(
+                    context,
+                    "train.use_rnn",
+                    "cannot be enabled with the SPACeR anchor (spacer_kl_coef/spacer_reward_coef > 0); "
+                    "stateless ref forwards under RNN state partitioning are semantically wrong",
+                )
+            if train["normalize_rewards"]:
+                _raise_config_error(
+                    context,
+                    "train.normalize_rewards",
+                    "must be false when the SPACeR anchor is on: α·logπ_ref is calibrated in raw "
+                    "reward units and normalize_rewards would silently rescale it (review F2)",
+                )
     eval_config = config["eval"]
     evaluation_required = context.startswith("evaluation") or config["train"]["evaluation_interval_epochs"] is not None
     if not eval_config:

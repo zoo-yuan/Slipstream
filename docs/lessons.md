@@ -23,3 +23,4 @@
 - **LAN 直灌 site-packages 是最快的跨机建环境法**（8.9G/3 分钟替代慢链路 torch 下载）：venv 壳用 uv venv 重建（路径烧死不可搬），site-packages 纯数据可直拷；manylinux 轮子跨 Ubuntu 版本可用。
 - **`pkill -f` 自匹配第三次**（远程 ssh 命令串含模式即自杀）：一律 `[x]x` 括号技巧或按 PID。
 - **模型迁移必须连 config.yaml 一起搬**（本地渲染冠军模型时踩中）：pufferl eval 靠 ckpt 目录的 config.yaml 恢复架构，只拷 models/*.pt 会在加载时 RuntimeError。
+- **HTML 报告页验证必须作用于语义对象，不是源码子串**（GATE 页 `../2026-11-11-NIGHT-REPORT.html` 坏链接过检事故，2026-11-17）：DOM dump 检查 `'2026-11-11-NIGHT-REPORT.html' in dom` 是子串断言，链接层级错误照样 PASS。工具已固化：`scripts/check_report_links.py`（解析 href/src 按页面目录解析→逐一验存在），每次产出报告页必跑，与截图/DOM 检查并列；断言要测「浏览器会怎么解析」，不是「字符串在不在」。

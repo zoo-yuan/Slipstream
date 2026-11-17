@@ -28,6 +28,7 @@ class ValuePolicy(torch.nn.Module):
 )
 def test_filtered_ppo_accumulation_matches_optimizer_batches(retained_count, microbatch_size, accumulation_count):
     trainer = PuffeRL.__new__(PuffeRL)
+    trainer.anchor_ref = None  # init default (spacer off): tests bypass __init__, mirror real defaults
     trainer.policy = ValuePolicy()
     trainer.config = {
         "device": "cpu",

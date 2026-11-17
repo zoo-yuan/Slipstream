@@ -9,7 +9,7 @@ As-of: cb4b99e（三门夜班：v4 快照池自博弈代码就绪 + 顶格率指
 - **规模轴 III 完成（2026-11-12/13 夜，owner 授权窗口）**：R 配方 s42 @16x256 face，**16× = 新双面冠军 ret 2.978/2.792（400 场景大样本，coll 0.0000/0.0023，dnf 0.0005/0.0182，goals 2.89，速度 2.83）**；规模曲线 1.20→1.33→2.11→2.42→**2.98（16×）**→**2.49（32× 回落）**——**步数硬通货汇率在 16× 拐头**，32× 后期训练 ret 波动提示超长程 lr 不退火不稳。权重：lab42 `artifacts/t3-f16-16x/`（16×s43 复现断点在盘 76% 停）；32× `artifacts/t3-f16-32x/`；8× `artifacts/t3-f16-8x/`。交接页 `.scratch/handoff/2026-11-13-night-scale-III.md`。
 - master 基线 = 上游 PufferDrive `3.0` @ `2c1ca3e4`；`upstream` 只读；**lab42 双机线**：`zoo@192.168.202.42:/home/zoo/rino_we/808-Scale-AD/Slipstream`（2×RTX4090，同步走 `git push lab42` + `scripts/sync_lab42.sh`；父目录有他人项目勿动；192 核）。
 - **配方 v3 双冠军 N=2（ADR-0008）**：R@4× s42（8×128）**2.113/1.825**、s43（16×256）**2.100/1.909**；碰撞 0.0004-0.0015、dnf 0.011-0.021。规模曲线未饱和（1.20→1.33→2.11）；**总步数=硬通货，面轴=墙钟优化（+20%）**，双卡并跑另有 SPS 争用（87K→45K）。8×（1.95e9）断点在盘等卡（artifacts/t3-f16-8x，323M/1946M）。冠军权重本地+lab42 双份（含 config.yaml）。
-- 渲染验收在位：`artifacts/NIGHT-REPORT.html` v3 + 冠军回放画廊 render-CHAMP{,2}（同 8 场景 vs B 基线）。
+- 渲染验收在位：`artifacts/2026-11-11-NIGHT-REPORT.html` v3 + 冠军回放画廊 render-CHAMP{,2}（同 8 场景 vs B 基线）。
 - **GPU 现状（11-12 晚）**：lab42 两卡均已让出（1 号→strata 服务，0 号→高优任务），本地 3060 已让；全部战役进程消零。
 - **夜间链与断点**：`scripts/night_chain.sh`（8×→16×→cap2048→16xs43，硬停 10:15）；**cap2048 容量臂 CUDA OOM×2 DEAD**（backbone 2048 与 strata 共卡无 headroom；重试需独占卡或 backbone 1536 折中）；夜间战役过程 `.scratch/night-2026-11-11.md`；复现（R@1× 三种子 0.86-1.28 安全带紧密；R@2× N=2；S@s43 紧密）。
 - 内核旋钮谱系：T1 progress → T6 offroad → T7 collision（默认位级=legacy；本树 sha `02786a05…`，lab42 自建 sha 不同——跨机相对比较成立，锚点重定仍待 owner）。

@@ -19,6 +19,7 @@ from pufferlib.config_schema import (
     ControlMode,
     DynamicsModel,
     GoalRegen,
+    GoalSpeedMode,
     GoalSource,
     InfractionBehavior,
     InitMode,
@@ -42,6 +43,7 @@ def _screaming_snake(name):
 # (control_vehicles, not vehicles) so the leading "control_" is stripped
 # before joining, matching drive.h's CONTROL_MODE_VEHICLES etc.
 _DRIFT_CHECKED_ENUMS = [
+    (GoalSpeedMode, lambda member: member.name),
     (SimulationMode, lambda member: member.name),
     (ActionType, lambda member: member.name),
     (DynamicsModel, lambda member: member.name),

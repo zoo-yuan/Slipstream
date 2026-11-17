@@ -227,15 +227,16 @@ def _build_benchmark_args(base_args, benchmark, environment_config):
         args["env"]["num_maps"] = benchmark_environment_config["num_maps"]
     else:
         args["env"].update(copy.deepcopy(environment_config))
-        # v5 goal_speed_mode consistency: the eval face must run the task the checkpoint
-        # was trained on (carla/carla_fast pin lane_limit; nuplan/womd stay on the constant
-        # default, so a lane_limit ckpt cross-evaluated there aborts here instead of silently
-        # running lane_limit against unknown-limit fallbacks). A benchmark section without the
-        # key declares the constant default. An explicit eval.goal_speed_mode override IS the
-        # deliberate declaration (e.g. constant A/B on a lane_limit face), so it skips this check.
-        if args["eval"].get("goal_speed_mode") is None:
+        # v5 goal_speed_mode consistency: an UNDECLARED benchmark key follows the
+        # checkpoint (constant ckpts stay constant; lane_limit ckpts eval lane_limit), so
+        # existing checkpoints and the E-series auto-eval are unaffected. A benchmark that
+        # DECLARES the key pins its face: a checkpoint trained in the other mode aborts here
+        # instead of silently measuring the wrong task (e.g. a lane_limit ckpt on nuplan's
+        # unknown-limit fallbacks). An explicit eval.goal_speed_mode override is the deliberate
+        # cross-mode declaration and skips this check.
+        if args["eval"].get("goal_speed_mode") is None and "goal_speed_mode" in benchmark_environment_config:
             checkpoint_goal_speed_mode = args["env"].get("goal_speed_mode", "constant")
-            benchmark_goal_speed_mode = benchmark_environment_config.get("goal_speed_mode", "constant")
+            benchmark_goal_speed_mode = benchmark_environment_config["goal_speed_mode"]
             if benchmark_goal_speed_mode != checkpoint_goal_speed_mode:
                 raise pufferlib.APIUsageError(
                     f"benchmark env.goal_speed_mode={benchmark_goal_speed_mode!r} does not match the "

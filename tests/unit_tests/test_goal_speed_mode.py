@@ -186,6 +186,83 @@ def test_constructor_validation():
     env.close()
 
 
+
+
+class TestHotPathDiscipline:
+    """ADR-0005 lineage discipline: the v5 kernel diff is exactly the declared lines
+    (single gated write + init-time plumbing), alloc-free, RNG-stream untouched.
+    Sibling knob tests (T6/T7) exempt these lines by importing EXPECTED_ADDED_LINES."""
+
+    V5_BASELINE = "6440443"
+    EXPECTED_ADDED_LINES = {
+        '"goal_speed_mode=lane_limit overrides goal_speed_randomization per step; disable "',
+        '"goal_speed_randomization or use goal_speed_mode=constant");',
+        '#define GOAL_SPEED_MODE_CONSTANT 0',
+        '#define GOAL_SPEED_MODE_LANE_LIMIT 1',
+        '&& env->goal_speed_randomization) {',
+        '// (c_step order: compute_metrics -> compute_rewards -> compute_observations).',
+        '// (drive.h SPEED_LIMIT block), so the final-goal speed gate, the speeding check',
+        '// CONSTANT (default) keeps the generate_reward_coefs spawn value bit-identical;',
+        "// Kernel-side mirror of the drive.py constructor fail-fast: lane_limit's per-step",
+        "// LANE_LIMIT pins it to the lane's live speed limit every compute_metrics call",
+        '// UNKNOWN_LANE_SPEED_LIMIT_MPS (=15, set above). No cap at 20: REWARD_BOUNDS-normalized',
+        '// and the conditioning obs all follow the lane limit. Mode takes priority over',
+        '// before every consumer in the same step: the final-goal speed gate below (same function),',
+        '// bit-identical; mode takes priority over goal_speed_randomization (rejected in drive.py',
+        '// coef write overrides the spawn-time randomization draw, so the combination would',
+        "// compute_rewards' speeding check, and write_reward_target_obs' conditioning column",
+        '// consumers clamp, and the final-goal gate / speeding check want the true limit. The write',
+        '// goal_speed_mode=constant (default) skips the write entirely, keeping the stream',
+        '// goal_speed_randomization (the per-step write overwrites the spawn-time draw), so',
+        '// is O(1), malloc-free, consumes no RNG (generate_reward_coefs stream untouched), and runs',
+        '// silently mislead any reset-frame reader of the goal-speed coef.',
+        '// target by construction. Off-lane / unknown-limit steps fall back to',
+        '// that combination is rejected in drive.py at construction time.',
+        '// to the same target_speed expression the overspeed metric uses, so v_goal == the speeding',
+        '// v5 goal_speed_mode: how the per-agent goal-speed coef (v_goal) is set.',
+        '// v5 goal_speed_mode=lane_limit: single gated write pinning the goal-speed coef (v_goal)',
+        '// when both are live, so the spawn-time draw can never mislead a reset-frame reader).',
+        'PyErr_Format(PyExc_ValueError, "goal_speed_mode must be GOAL_SPEED_MODE_CONSTANT or GOAL_SPEED_MODE_LANE_LIMIT. Got: %d",',
+        'PyErr_SetString(',
+        'PyExc_ValueError,',
+        'agent->reward_coefs[REWARD_COEF_GOAL_SPEED] = target_speed;',
+        'env->goal_speed_mode = (int) unpack(kwargs, "goal_speed_mode");',
+        'env->goal_speed_mode);',
+        'if (env->goal_speed_mode != GOAL_SPEED_MODE_CONSTANT && env->goal_speed_mode != GOAL_SPEED_MODE_LANE_LIMIT) {',
+        'if (env->goal_speed_mode == GOAL_SPEED_MODE_LANE_LIMIT && env->reward_randomization',
+        'if (env->goal_speed_mode == GOAL_SPEED_MODE_LANE_LIMIT) {',
+        'int goal_speed_mode;             // GOAL_SPEED_MODE_*: constant (default) or per-step lane speed limit (v5)',
+        'return -1;',
+        '}',
+    }
+
+    def test_kernel_diff_is_exactly_the_declared_alloc_free_lines(self):
+        import subprocess
+        proc = subprocess.run(
+            ["git", "diff", self.V5_BASELINE, "--",
+             "pufferlib/ocean/drive/drive.h", "pufferlib/ocean/drive/binding.c",
+             "pufferlib/ocean/drive/env_binding.h", "pufferlib/ocean/drive/constants.h"],
+            cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            capture_output=True, text=True, timeout=60,
+        )
+        if proc.returncode != 0:
+            pytest.skip(f"git diff unavailable: {proc.stderr.strip()[:120]}")
+        added = [
+            line[1:].strip()
+            for line in proc.stdout.splitlines()
+            if line.startswith("+") and not line.startswith("+++") and line.strip() != "+"
+        ]
+        unexpected = [line for line in added if line not in self.EXPECTED_ADDED_LINES]
+        assert not unexpected, f"kernel diff contains undeclared added lines: {unexpected}"
+        missing = self.EXPECTED_ADDED_LINES - set(added)
+        assert not missing, f"declared kernel lines absent from diff: {missing}"
+        alloc_tokens = ("malloc", "calloc", "realloc", "pymem_", "new ")
+        offenders = [line for line in added
+                     if not line.lstrip().startswith("//")
+                     and any(tok in line.lower() for tok in alloc_tokens)]
+        assert not offenders, f"allocation tokens added to kernel: {offenders}"
+
+
 if __name__ == "__main__":
     import sys
 

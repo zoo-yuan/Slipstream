@@ -366,19 +366,24 @@ class TestHotPathDiscipline:
         added = [
             line[1:].strip()
             for line in proc.stdout.splitlines()
-            if line.startswith("+") and not line.startswith("+++")
+            if line.startswith("+") and not line.startswith("+++") and line.strip() != "+"
         ]
         # Sibling knobs in the ADR-0005 lineage declare their own lines in their own
         # test files; exempt them here rather than duplicating whitelists.
+        from tests.unit_tests.test_goal_speed_mode import TestHotPathDiscipline as _V5Discipline
+        v5_declared = _V5Discipline.EXPECTED_ADDED_LINES
         sibling_markers = ("reward_offroad", "REWARD_COEF_OFFROAD", "T6 offroad")
         unexpected = [line for line in added
                       if line not in self.EXPECTED_ADDED_LINES
-                      and not any(m in line for m in sibling_markers)]
+                      and not any(m in line for m in sibling_markers)
+                      and line not in v5_declared]
         assert not unexpected, f"kernel diff contains undeclared added lines: {unexpected}"
         missing = self.EXPECTED_ADDED_LINES - set(added)
         assert not missing, f"declared kernel lines absent from diff: {missing}"
         alloc_tokens = ("malloc", "calloc", "realloc", "pymem_", "new ")
-        offenders = [line for line in added if any(tok in line.lower() for tok in alloc_tokens)]
+        offenders = [line for line in added
+                     if not line.lstrip().startswith("//")
+                     and any(tok in line.lower() for tok in alloc_tokens)]
         assert not offenders, f"allocation tokens added to kernel: {offenders}"
         print(f"EVIDENCE d: kernel diff adds exactly {len(added)} alloc-free lines (struct + my_init + generate_reward_coefs)")
 

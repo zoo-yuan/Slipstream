@@ -62,9 +62,10 @@ benchmarks:
       # steps are excluded from the denominator, unknown-limit steps are counted and judged at
       # 15) — cross-face evals of a lane_limit ckpt hit the same fail-fast, so nothing runs
       # silently wrong. carla_render also stays constant-declared (render is ckpt-agnostic here);
-      # rendering a lane_limit ckpt requires eval.goal_speed_mode="lane_limit" as the explicit
+      # goal_speed_mode is intentionally UNDECLARED here: an undeclared benchmark follows the
+      # checkpoint's mode (constant ckpts stay constant; lane_limit ckpts eval lane_limit).
+      # Declare it explicitly only to pin a face and get the cross-mode fail-fast.
       # declaration, which bypasses the consistency check by construction.
-      goal_speed_mode: "lane_limit"
 
   - name: carla_fast
     seed: 42
@@ -77,7 +78,6 @@ benchmarks:
       scenario_length: 500
       control_mode: control_vehicles
       map_dir: pufferlib/resources/drive/binaries/carla
-      goal_speed_mode: "lane_limit"
 
   - name: carla_render
     seed: 42

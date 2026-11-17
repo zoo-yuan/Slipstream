@@ -181,7 +181,7 @@ ARMS: dict[str, dict[str, float | str]] = {
     "X_cap2048": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.05,
                    "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0,
                    "policy.backbone_hidden_size": 2048},
-    # Wave4 SPACeR 自博弈首开（v4 提案 D6 + 评审必改①并入）：基座 = R 冠军配方原封；
+    # Wave4 快照池自博弈首开（snapshot-pool，非 KL 锚定——票 06 口径）（v4 提案 D6 + 评审必改①并入）：基座 = R 冠军配方原封；
     # Y = 提案主臂（ego 25%）；Z = p_learner=0.5 姊妹臂（评审 A1 样本预算错配缓解）。
     # ref = R 冠军 ckpt（已核存在；Y/Z 必须沿用冠军同构 policy 段，X 的 2048 backbone
     # 与其不互载，ref load 不匹配即 fail-fast）。

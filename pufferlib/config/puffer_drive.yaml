@@ -433,7 +433,7 @@ train:
   render_num_maps: null
   # Stop after this many epochs in this process (debug/render runs); null runs to total_timesteps
   stop_after_epochs: null
-  # --- v4 SPACeR self-play (reference-anchored snapshot pool) ---
+  # --- v4 snapshot-pool self-play (reference-anchored snapshot pool) ---
   # Role mix over the global agent slots. Defaults below are pure v3: the learner
   # drives every agent and PuffeRL never constructs a mixer (no RNG consumed).
   # Fraction of slots driven by the learner; those ego rows stay in the PPO buffer.

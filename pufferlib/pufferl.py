@@ -137,7 +137,7 @@ def logits_to_float(logits):
 
 
 class SelfplayMixer:
-    """v4 SPACeR self-play rollout controller (reference-anchored snapshot pool).
+    """v4 snapshot-pool self-play rollout controller (reference-anchored snapshot pool).
 
     Holds a per-global-agent-slot role assignment, K frozen snapshot servers
     ring-loaded with past learner weights, and an optional frozen reference
@@ -381,7 +381,7 @@ class PuffeRL:
             self.policy.forward_eval = torch.compile(self.uncompiled_policy.forward_eval, **compile_kwargs)
             pufferlib.pytorch.sample_logits = torch.compile(pufferlib.pytorch.sample_logits, **compile_kwargs)
 
-        # v4 SPACeR self-play: the mixer exists only when the learner cedes any
+        # v4 snapshot-pool self-play: the mixer exists only when the learner cedes any
         # agent slot (selfplay_p_learner < 1.0). The off path draws no roles and
         # consumes no RNG, keeping the v3 rollout bitstream intact.
         self.selfplay = None

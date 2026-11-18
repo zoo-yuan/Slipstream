@@ -45,6 +45,7 @@ export PYTHONPATH="$PD:$CARL_RUNTIME${PYTHONPATH:+:$PYTHONPATH}"
 mkdir -p "$NUPLAN_EXP_ROOT"
 
 : "${CKPT:?set CKPT=/path/to/model_xxx.pt (or CKPT=dummy for the wiring test)}"
+[ "$CKPT" != "dummy" ] && CKPT="$(readlink -f "$CKPT")"  # devkit relocates cwd; relative ckpt paths break
 CHALLENGE="closed_loop_reactive_agents_pufferdrive"  # FORCED, see header
 SPLIT=${SPLIT:-val14_split}
 WORKER=${WORKER:-sequential}

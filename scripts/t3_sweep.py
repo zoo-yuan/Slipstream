@@ -218,32 +218,25 @@ ARMS: dict[str, dict[str, float | str]] = {
     "E3_lane_progv1": {"reward_progress_lo": 2.5e-3, "reward_progress_hi": 2.5e-2, "train.ent_coef": 0.05,
                          "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0, "goal_speed_mode": "lane_limit"},
     # Wave S：SPACeR 锚定首开（cf3c41c owner 裁决采纳；KL+似然锚定，与 Y/Z 快照池正交可叠加，
-    # 首跑单轴归因 = 全 selfplay off，p_learner 保持 1.0）。基座 = R 冠军配方；
-    # ref = R 冠军 ckpt（同 Y/Z，X 的 2048 backbone 不互载即 fail-fast）。
-    # β ∈ ent_coef 谱系带（KL 与熵同 nats 量级 ≤ln12≈2.48）；α 当前为提案假设值占位，
-    # ⚠ 待 spacer_calibrate 实测回填（必改2 硬门：scripts/spacer_calibrate.py 对 ref ckpt
-    #   实测 −logπ_ref 分布，S 首跑前须校准 α 使 α·mean(−logπ_ref) ∈ progress 带
-    #   [1.25e-3,1.25e-2]；校准结果回填本注释与提案 §3，calibration.json 存档）。
-    # ⚠ α 阈值依赖基座配方（必改5）：E 系若换任务定义（goal_speed_mode 改主导奖励），
-    #   α 须按 E 冠军重标（spacer_calibrate 重跑），不能沿用 R 的 progress 口径。
-    # S2 判读对照（必改4）：β=0.10 叠加 ent0.05 → 等效熵压 ~0.15（历史 max 0.06 的 2.5×；
-    #   前向 KL 与 −ent·H 同向抬熵，评审 F3），S2 读数须与 S4_ent06_noanchor（ent0.06 无锚）
-    #   对照判读，否则「高熵非锚定」与「真锚定」不可区分。
-    "S1_spacer": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.05,
-                   "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0,
-                   "train.spacer_kl_coef": 0.03, "train.spacer_reward_coef": 0.005,  # α 待校准回填
-                   "train.selfplay_ref_model_path": "artifacts/t3-R4x/ckpt/R_ent5_off23/models/model_puffer_drive_007424.pt"},
-    "S2_spacer_hi": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.05,
-                      "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0,
-                      "train.spacer_kl_coef": 0.10, "train.spacer_reward_coef": 0.0064,  # α 待校准回填
-                      "train.selfplay_ref_model_path": "artifacts/t3-R4x/ckpt/R_ent5_off23/models/model_puffer_drive_007424.pt"},
-    "S3_spacer_lo": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.05,
-                      "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0,
-                      "train.spacer_kl_coef": 0.01, "train.spacer_reward_coef": 0.001,  # α 待校准回填
-                      "train.selfplay_ref_model_path": "artifacts/t3-R4x/ckpt/R_ent5_off23/models/model_puffer_drive_007424.pt"},
+    # 首跑单轴归因 = 全 selfplay off，p_learner 保持 1.0）。**基座 = E3@4× v5 基座（ADR-0010 owner 封定）**；
+    # ref = E3 ckpt；α 已按 E3 基座校准回填（calibration_e3.json: mean −logπ=1.8901 nats, n=18393,
+    #   E3 progress 带 [2.5e-3,2.5e-2] → α 带 [1.32e-3,1.32e-2]，S1 取带中 S2 带顶 S3 带底）。
+    # S2 判读对照（必改4）：β=0.10 叠加 ent0.05 → 等效熵压 ~0.15，S2 读数须与 S4_ent06_noanchor（同步 E3 基座）对照。
+    "S1_spacer": {"reward_progress_lo": 2.5e-3, "reward_progress_hi": 2.5e-2, "train.ent_coef": 0.05,
+                   "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0, "goal_speed_mode": "lane_limit",
+                   "train.spacer_kl_coef": 0.03, "train.spacer_reward_coef": 0.0042,  # α·1.890≈0.008 带中
+                   "train.selfplay_ref_model_path": "artifacts/t5-E3_lane_progv1-4x/ckpt/E3_lane_progv1/models/model_puffer_drive_001855.pt"},
+    "S2_spacer_hi": {"reward_progress_lo": 2.5e-3, "reward_progress_hi": 2.5e-2, "train.ent_coef": 0.05,
+                      "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0, "goal_speed_mode": "lane_limit",
+                      "train.spacer_kl_coef": 0.10, "train.spacer_reward_coef": 0.0132,  # α·1.890≈0.025 带顶
+                      "train.selfplay_ref_model_path": "artifacts/t5-E3_lane_progv1-4x/ckpt/E3_lane_progv1/models/model_puffer_drive_001855.pt"},
+    "S3_spacer_lo": {"reward_progress_lo": 2.5e-3, "reward_progress_hi": 2.5e-2, "train.ent_coef": 0.05,
+                      "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0, "goal_speed_mode": "lane_limit",
+                      "train.spacer_kl_coef": 0.01, "train.spacer_reward_coef": 0.0013,  # α·1.890≈0.0025 带底
+                      "train.selfplay_ref_model_path": "artifacts/t5-E3_lane_progv1-4x/ckpt/E3_lane_progv1/models/model_puffer_drive_001855.pt"},
     # S4 = 评审 F3 去混淆对照：ent0.06、无锚定（R 基座）——分离「熵本身抬到 0.06」与
     # 「锚定熵效应」的贡献；S2 判读的必备对照（与既有 S_ent6_off23 同 ent 剂量，不同轮次基线）。
-    "S4_ent06_noanchor": {"reward_progress_lo": 1.25e-3, "reward_progress_hi": 1.25e-2, "train.ent_coef": 0.06,
+    "S4_ent06_noanchor": {"reward_progress_lo": 2.5e-3, "reward_progress_hi": 2.5e-2, "train.ent_coef": 0.06, "goal_speed_mode": "lane_limit",
                             "reward_offroad_lo": 2.0, "reward_offroad_hi": 3.0},
 }
 ARM_COLORS = {"F_ent2": "tab:cyan", "G_ent3": "tab:purple", "H_ent_anneal": "tab:olive", "I_vel3": "tab:red", "J_ent4": "tab:brown", "K_vel6": "tab:pink", "L_ent3_off23": "tab:orange", "M_ent3_coll23": "tab:blue", "N_ent3_anneal_hi": "tab:gray", "P_ent4_off23": "tab:green", "Q_ent3_both23": "tab:red", "R_ent5_off23": "tab:brown", "S_ent6_off23": "tab:purple", "T_ent5_anneal": "tab:olive", "U_ent5_off2530": "tab:green", "V_ent5_off1520": "tab:blue", "W_ent5_progv1": "tab:orange", "X_cap2048": "tab:cyan", "Y_selfplay": "crimson", "Z_selfplay_half": "teal", "E1_lane": "gold", "E2_lane_goal03": "darkviolet", "E3_lane_progv1": "deeppink", "S1_spacer": "slateblue", "S2_spacer_hi": "orangered", "S3_spacer_lo": "mediumseagreen", "S4_ent06_noanchor": "silver"}

@@ -25,6 +25,7 @@ As-of: 98abd1b（夜班双卡战役：E3@4×=v5 最强 ret 5.32/速度 4.71(+88%
 - `docs/2026-11-13-SOTA模型规格与ONNX导出及评测方法.md`（实证：obs 821 布局/12 类动作/7.6M 参数；ONNX 导出脚本 `scripts/export_onnx.py` + ORT 对拍 8.6e-6；评测面构造与指标计算逻辑）。
 - `.wayfinder/research/selfplay-v4-findings.md` + `val14-data-recon.md`（2026-11-13，路径②①实况修正）。
 - 夜间战役过程叙事在 `.scratch/night-2026-11-11.md`（易碎层）。
+- `docs/FAQ.md`（活文档，2026-11-18 启用：架构/数据口径问答，Q1-Q5 首版——训练地图/无 IL/Apollo 测试先行/资产口径/val14 现状）。
 - `docs/adr/0009-scale-axis-closure-16x-n2.md` + `docs/adr/0010-efficiency-axis-and-spacer-adoption.md`（2026-11-18 蒸馏：规模轴收官 + owner 双采纳；E3 基座 pending）。
 
 ## Next（下一步）

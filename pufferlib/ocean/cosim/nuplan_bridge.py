@@ -122,15 +122,37 @@ def _road_entry(road_id: int, road_type: int, xy: np.ndarray, entry=None, exit_=
     return e
 
 
-def write_drive_bin(roads, traffic, out_path: Path, scenario_id: str, centroid=(0.0, 0.0, 0.0)):
-    """Write a map-only PufferDrive bin (0 agents, 0 objects, empty lane graph),
-    like the CARLA town bins. `roads`/`traffic` follow mirror_map_bin's schema."""
+def write_drive_bin(
+    roads,
+    traffic,
+    out_path: Path,
+    scenario_id: str,
+    centroid=(0.0, 0.0, 0.0),
+    lane_graph=None,
+):
+    """Write a map-only PufferDrive bin (0 agents, 0 objects), like the CARLA town
+    bins. `roads`/`traffic` follow mirror_map_bin's schema.
+
+    `lane_graph` ({n, lane_ids, distances}) writes a whole-city graph block
+    (scripts/val14_build_city_bins.py): lane_ids are road-element indices, distances
+    a row-major n x n float32 matrix, row = from / column = to (map_data.h transposes
+    it at load so drive.h:5999 reads [goal * n + from]), unreachable pairs +inf.
+    None (scenario bins) keeps the historical empty graph {n: 0}."""
+    lane_graph = lane_graph or {"n": 0, "lane_ids": (), "distances": ()}
+    for t in traffic:
+        # TLPHASE1 rows (junction signal cycles); map-only bins are not in a cycle
+        t.setdefault("junction_id", -1)
+        t.setdefault("phase_idx", -1)
     data = {
         "agents": [],
         "roads": roads,
         "traffic": traffic,
         "objects": [],
-        "lane_graph": {"n": 0, "lane_ids": (), "distances": ()},
+        "lane_graph": {
+            "n": int(lane_graph["n"]),
+            "lane_ids": tuple(lane_graph["lane_ids"]),
+            "distances": tuple(lane_graph["distances"]),
+        },
         "scenario_id": scenario_id.encode("utf-8")[:128].ljust(128, b"\0"),
         "dataset_name": b"nuplan".ljust(32, b"\0"),
         "log_length": 0,
@@ -138,6 +160,9 @@ def write_drive_bin(roads, traffic, out_path: Path, scenario_id: str, centroid=(
         "objects_of_interest": (),
         "tracks_to_predict": (),
         "centroid": (float(centroid[0]), float(centroid[1]), float(centroid[2])),
+        "has_phase_section": True,  # the width section only parses behind a phase section
+        "has_width_section": any("widths" in r for r in roads),
+        "has_zone_section": False,
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     _mbin.write_bin(data, out_path)

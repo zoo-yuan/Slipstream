@@ -38,6 +38,7 @@ Usage (lab42):
 
 import argparse
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -121,7 +122,106 @@ def _traffic_entry(traffic_id, traffic_type, stop_line_xy, heading, controlled_l
     }
 
 
-def build_city_bin(road_elements, traffic, out_path, scenario_id, origin=None):
+def decimate_polyline(xy, min_seg_m=5.0, turn_deg=15.0):
+    """Vertex-decimate a polyline: drop interior points closer than `min_seg_m` to the
+    kept predecessor while the local turn is under `turn_deg` degrees. Endpoints kept.
+
+    Gate-2 follow-up: the kernel's grid counts SEGMENTS-per-5m-cell (map_data.h
+    init_grid_map: one count per segment, binned at its midpoint), and GPKG baselines
+    carry ~1 m vertices, so whole-city bins stack hundreds of segments per cell at
+    interchanges (vegas smoke: 276 > 64). CARLA town bins never hit this because their
+    polylines are vertex-sparse. Decimating to >=5 m segments (with turn preservation)
+    matches the CARLA bin vertex density semantics and loses no obs fidelity at the
+    kernel's 5 m cell resolution.
+    Pure function; returns a new (n, 2) float64 array with n <= len(xy).
+    """
+    xy = np.asarray(xy, dtype=np.float64).reshape(-1, 2)
+    if len(xy) <= 2:
+        return xy
+    keep = [xy[0]]
+    i = 0
+    for j in range(1, len(xy) - 1):
+        seg = xy[j] - keep[-1]
+        nxt = xy[j + 1] - xy[j]
+        seg_len = float(np.hypot(*seg))
+        nxt_len = float(np.hypot(*nxt))
+        turn = 0.0
+        if seg_len > 1e-9 and nxt_len > 1e-9:
+            cosang = float(np.clip(np.dot(seg, nxt) / (seg_len * nxt_len), -1.0, 1.0))
+            turn = math.degrees(math.acos(cosang))
+        if seg_len >= min_seg_m or turn >= turn_deg:
+            keep.append(xy[j])
+    keep.append(xy[-1])
+    return np.asarray(keep)
+
+
+def cell_segment_load(road_elements, cell_m=5.0):
+    """Kernel-true per-cell segment load (audit/thinning helper): count every
+    consecutive segment into the 5 m cell of its midpoint, exactly like
+    map_data.h init_grid_map's first pass (is_road_grid_candidate types only).
+    Returns {(cx, cy): count} over candidate elements."""
+    from pufferlib.ocean.cosim.nuplan_bridge import LANE_SURFACE_STREET as _LANE_T
+    from pufferlib.ocean.cosim.nuplan_bridge import ROAD_EDGE_BOUNDARY as _EDGE_T
+
+    load = {}
+    for e in road_elements:
+        t = _LANE_T if "exits" in e else int(e.get("type", -1))
+        if not (t == _LANE_T or t == _EDGE_T):  # datatypes.h: lanes + edges only
+            continue
+        xy = np.asarray(e["xy"], dtype=np.float64).reshape(-1, 2)
+        mid = (xy[:-1] + xy[1:]) / 2.0
+        cs = np.floor(mid / cell_m).astype(int)
+        for cx, cy in zip(cs[:, 0], cs[:, 1]):
+            load[(int(cx), int(cy))] = load.get((int(cx), int(cy)), 0) + 1
+    return load
+
+
+def thin_extras_to_cell_cap(road_elements, cap=64, cell_m=5.0, max_rounds=10):
+    """Second-stage guarantee: after decimation, any cell still over `cap` loses
+    whole NON-LANE entities (boundaries/lines/crosswalks -- lanes are graph nodes and
+    never dropped), highest per-cell segment contributor first. Returns (elements,
+    stats). Raises if a cell is over cap with lanes alone (unsolvable by thinning).
+    Mirrors the CARLA bins' effective sparsity semantics: dropping a redundant
+    physical-edge polyline costs one boundary obs row there, like a sparser map."""
+    from pufferlib.ocean.cosim.nuplan_bridge import LANE_SURFACE_STREET as _LANE_T, ROAD_EDGE_BOUNDARY as _EDGE_T
+
+    els = [dict(e) for e in road_elements]
+    dropped = {"total": 0}
+    for _ in range(max_rounds):
+        load = cell_segment_load(els, cell_m)
+        hot = {c: n for c, n in load.items() if n > cap}
+        if not hot:
+            return els, {"dropped": dropped, "max_cell_load": max(load.values()) if load else 0}
+        # segment-contributions of each non-lane element per hot cell
+        contrib = {}
+        for idx, e in enumerate(els):
+            if "exits" in e:
+                continue
+            t = int(e.get("type", -1))
+            if not (t == _EDGE_T or t == _LANE_T):
+                continue
+            xy = np.asarray(e["xy"], dtype=np.float64).reshape(-1, 2)
+            mid = (xy[:-1] + xy[1:]) / 2.0
+            cs = np.floor(mid / cell_m).astype(int)
+            for cx, cy in zip(cs[:, 0], cs[:, 1]):
+                if (int(cx), int(cy)) in hot:
+                    contrib[idx] = contrib.get(idx, 0) + 1
+        if not contrib:
+            lane_load = cell_segment_load([e for e in els if "exits" in e], cell_m)
+            worst = max(lane_load.values()) if lane_load else 0
+            raise ValueError(
+                f"cell cap {cap} exceeded with lanes alone (worst lane-only cell={worst}); "
+                "thinning cannot fix this -- reduce lane count or raise the cap consciously")
+        victim = max(contrib, key=lambda k: contrib[k])
+        kind = els[victim].get("kind", els[victim].get("type"))
+        dropped[str(kind)] = dropped.get(str(kind), 0) + 1
+        dropped["total"] += 1
+        del els[victim]
+    raise RuntimeError("thin_extras_to_cell_cap did not converge")
+
+
+def build_city_bin(road_elements, traffic, out_path, scenario_id, origin=None, decimate=True,
+                   cell_cap=64):
     """Assemble and write one city bin from pure-layer inputs.
 
     road_elements: ordered list; each entry is either a lane ("key", "xy", "speed_limit",
@@ -134,6 +234,13 @@ def build_city_bin(road_elements, traffic, out_path, scenario_id, origin=None):
     registers it against the GPKG and caches a sidecar, like the deployed bins).
     """
     lane_positions = [i for i, e in enumerate(road_elements) if "exits" in e]
+    if decimate:
+        for e in road_elements:
+            e["xy"] = decimate_polyline(e["xy"])
+    if cell_cap:
+        road_elements, thin_stats = thin_extras_to_cell_cap(road_elements, cap=cell_cap)
+        print(f"[thin] cap={cell_cap} stats={thin_stats}")
+        lane_positions = [i for i, e in enumerate(road_elements) if "exits" in e]
     if origin is None:
         origin = np.concatenate(
             [np.asarray(road_elements[i]["xy"], dtype=np.float64).reshape(-1, 2) for i in lane_positions]

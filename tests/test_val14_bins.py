@@ -186,3 +186,32 @@ def test_bin_bytes_match_reference_writer(micro_bin):
     legacy_data = mbin.read_bin(legacy)
     assert legacy_data["lane_graph"]["n"] == 0
     assert legacy_data["lane_graph"]["distances"] == ()
+
+
+def _dense_interchange(n_lines=80, points_per_line=120, span=8.0):
+    """80 dense polylines crossing one 5 m cell (vegas-interchange-like load)."""
+    els = []
+    for k in range(n_lines):
+        t = np.linspace(0.0, span, points_per_line)
+        xy = np.stack([t, 0.02 * np.sin(3.0 * t) + 0.001 * k], axis=1)
+        els.append({"xy": xy, "type": 2, "kind": "boundary_type_3"})  # ROAD_EDGE_BOUNDARY
+    return els
+
+
+class TestDecimation:
+    def test_decimate_keeps_endpoints_and_drops_dense_points(self):
+        xy = np.stack([np.linspace(0, 50, 100), np.zeros(100)], axis=1)
+        out = builder.decimate_polyline(xy, min_seg_m=5.0)
+        assert len(out) <= 12 and np.allclose(out[0], xy[0]) and np.allclose(out[-1], xy[-1])
+
+    def test_decimate_preserves_sharp_turns(self):
+        xy = np.array([[0, 0], [4.9, 0.01], [4.9, 4.9]])  # 90deg turn within <5m
+        out = builder.decimate_polyline(xy, min_seg_m=5.0, turn_deg=15.0)
+        assert np.allclose(out, xy)  # vertex kept by the turn rule
+
+    def test_dense_interchange_load_under_cap_without_decimation_fails(self):
+        """Red-side control: raw gpkg-density interchange blows the kernel's
+        segments-per-cell cap (the 276>64 vegas failure mode)."""
+        load = builder.cell_segment_load(_dense_interchange())
+        assert max(load.values()) > 64
+

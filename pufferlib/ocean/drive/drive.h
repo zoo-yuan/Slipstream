@@ -152,7 +152,7 @@ struct GridMap {
     LaneQueryEntry *lane_query_pool;    // per cell, window order, lanes deduplicated at first appearance
     int *lane_query_offset;             // cell count + 1
     int *window_entity_count;           // every grid entity in the cell's 5x5 window
-    uint16_t **neighbor_cache_pool_idx; // per cell: entity_pool indices of its spiral neighborhood
+    uint32_t **neighbor_cache_pool_idx; // per cell: entity_pool indices of its spiral neighborhood (uint32: whole-city bins exceed 65536)
 };
 
 // Static, read-only map geometry shared across envs loading the same map file

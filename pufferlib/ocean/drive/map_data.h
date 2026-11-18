@@ -439,7 +439,7 @@ static void init_neighbor_offsets(Drive *env) {
 
 // Spiral-order entity_pool indices of a cell's vision window, observed lanes first then edges; NULL dest only counts.
 // lane_count is written by the counting call and read by the filling call to place the edge block.
-static int collect_neighbor_pool_indices(Drive *env, int cell_idx, uint16_t *dest, int *lane_count) {
+static int collect_neighbor_pool_indices(Drive *env, int cell_idx, uint32_t *dest, int *lane_count) {
     GridMap *grid = env->grid_map;
     int cell_x = cell_idx % grid->grid_cols;
     int cell_y = cell_idx / grid->grid_cols;
@@ -462,7 +462,7 @@ static int collect_neighbor_pool_indices(Drive *env, int cell_idx, uint16_t *des
             }
             int is_lane = obs_kind == OBS_ENTITY_LANE;
             if (dest != NULL) {
-                dest[is_lane ? lanes_seen : *lane_count + edges_seen] = (uint16_t) (first_pool_idx + e);
+                dest[is_lane ? lanes_seen : *lane_count + edges_seen] = (uint32_t) (first_pool_idx + e);
             }
             lanes_seen += is_lane;
             edges_seen += !is_lane;
@@ -475,13 +475,13 @@ static int collect_neighbor_pool_indices(Drive *env, int cell_idx, uint16_t *des
 static void cache_neighbor_offsets(Drive *env) {
     GridMap *grid = env->grid_map;
     int cell_count = grid->grid_cols * grid->grid_rows;
-    if (grid->total_entities > UINT16_MAX) {
+    if (grid->total_entities > INT32_MAX) {  // uint32 cache idx (was UINT16_MAX; whole-city nuPlan bins hit 96098)
         raise_error_with_message(
             ERROR_INVALID_ARGUMENT,
-            "%d grid entities exceed the uint16 neighbor cache index",
+            "%d grid entities exceed the uint32 neighbor cache index",
             grid->total_entities);
     }
-    grid->neighbor_cache_pool_idx = (uint16_t **) calloc(cell_count, sizeof(uint16_t *));
+    grid->neighbor_cache_pool_idx = (uint32_t **) calloc(cell_count, sizeof(uint32_t *));
     grid->neighbor_cache_count = (int *) calloc(cell_count + 1, sizeof(int));
     grid->neighbor_cache_lane_count = (int *) calloc(cell_count, sizeof(int));
     int total_count = 0;
@@ -493,7 +493,7 @@ static void cache_neighbor_offsets(Drive *env) {
             grid->neighbor_cache_pool_idx[i] = NULL;
             continue;
         }
-        grid->neighbor_cache_pool_idx[i] = (uint16_t *) malloc(neighbor_count * sizeof(uint16_t));
+        grid->neighbor_cache_pool_idx[i] = (uint32_t *) malloc(neighbor_count * sizeof(uint32_t));
         collect_neighbor_pool_indices(env, i, grid->neighbor_cache_pool_idx[i], &grid->neighbor_cache_lane_count[i]);
     }
     grid->neighbor_cache_count[cell_count] = total_count;
@@ -538,7 +538,7 @@ static int get_neighbors_entities(
 // scratch list filtered by kind.
 typedef struct NeighborCursor {
     const GridMapEntity *entities;
-    const uint16_t *pool_indices;
+    const uint32_t *pool_indices;
     int count;
     int pos;
     int obs_kind;
@@ -573,7 +573,7 @@ static NeighborCursor neighbor_cursor_begin(Drive *env, float x, float y, int ob
     }
     int lane_count = env->grid_map->neighbor_cache_lane_count[grid_idx];
     int total_count = env->grid_map->neighbor_cache_count[grid_idx];
-    const uint16_t *pool_indices = env->grid_map->neighbor_cache_pool_idx[grid_idx];
+    const uint32_t *pool_indices = env->grid_map->neighbor_cache_pool_idx[grid_idx];
     cursor.pool_indices = obs_kind == OBS_ENTITY_LANE ? pool_indices : pool_indices + lane_count;
     cursor.count = obs_kind == OBS_ENTITY_LANE ? lane_count : total_count - lane_count;
     return cursor;

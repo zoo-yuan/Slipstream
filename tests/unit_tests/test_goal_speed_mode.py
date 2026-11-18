@@ -195,6 +195,10 @@ class TestHotPathDiscipline:
 
     V5_BASELINE = "6440443"
     EXPECTED_ADDED_LINES = {
+        # val14 uint32 neighbor-cache widening (2026-11-19): capacity-only change,
+        # CARLA towns stay far below 65536 entities so the golden path is bit-identical
+        # (smoke goldens verified unchanged); whole-city nuPlan bins hit 96098.
+        'uint32_t **neighbor_cache_pool_idx; // per cell: entity_pool indices of its spiral neighborhood (uint32: whole-city bins exceed 65536)',
         '"goal_speed_mode=lane_limit overrides goal_speed_randomization per step; disable "',
         '"goal_speed_randomization or use goal_speed_mode=constant");',
         '#define GOAL_SPEED_MODE_CONSTANT 0',

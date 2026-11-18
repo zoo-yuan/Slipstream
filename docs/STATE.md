@@ -1,7 +1,7 @@
 # STATE
 
-As-of: 39a5f31（夜班双卡战役：E3@4×=v5 最强 ret 5.32/速度 4.71(+88%)/coll 0.0018；16× N=2 闭环 → ADR-0009；效率轴+SPACeR 双采纳 → ADR-0010）
-（2026-11-18 午：E3@4× 已封 v5 基座（owner）；此后技术决策全三门自主；nuPlan val 1191db+地图 zip 解锁、Apollo bag 2726 个（cyber record）解锁——val14 外部校准+bag 覆盖审计双战役点火；cap2048-v2/mix1600 在途）
+As-of: 98abd1b（夜班双卡战役：E3@4×=v5 最强 ret 5.32/速度 4.71(+88%)/coll 0.0018；16× N=2 闭环 → ADR-0009；效率轴+SPACeR 双采纳 → ADR-0010）
+（2026-11-18 晚：**val14 零样本链路全通+首分在手**——16× 冠军 32 vegas 场景全计分（drivable 1.0/coll 0.9375/TTC 0.9375/舒适与进度 0.63-0.66 弱项）；两级 bin 抽稀+uint32 缓存（golden 双实证护航）；bag 审计三门闭环 99.30%；cap2048 关闭（等步数+6%不敌 16×）；mix-1600 终口径 2.796；MAX_ENTITIES=64 系训练语义（512 双机破 golden 实证）。P4 全量差 190 chunk（owner 侧）
 （2026-11-17：owner 立项物流效率口径；v4 自博弈与 v5 效率轴均代码就绪等 GPU；SPACeR KL 锚定已采纳待提案；lab42 内核已重建同步）
 约定：AGENTS.md 是放置规则权威；strata 分层自 2026-11-03 启用；TerraZero 复刻 effort 活图在 `.wayfinder/map.md`（已完成）。**裁决真值在 `docs/adr/0001-0010`**（基底/配方v1/执法/运行时独立/奖励区间旋钮谱系/保守吸引子/熵破解配方v3/步数硬通货/规模轴16×收官/效率轴+SPACeR 双采纳）。
 

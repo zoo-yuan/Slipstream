@@ -28,3 +28,7 @@
 - **复合命令后台链的 echo "launched" 是假信号**（scp&&mv&&…&&nohup…& 形态两次断裂，产物从未启动）：启动确认必须验证产物侧效应（log 文件存在/目录创建/进程 cmdline 实读），长启动链拆成单条命令。
 - **art-dir 复用会被 state.json 的 dead 记录短路**（cap2048 三进宫：同目录 relaunch 直接 sweep complete）：dead 后重试必须换新 art-dir（-v2），或先清该臂 state 记录。
 - **评测面禁止手拼 env 键**（mix 面只给 hazard_enable+slots 两键，缺四开子旋钮 → 5.5h CPU 跑出第二份 clean，md5 相同才暴露）：一律走 scripts/t3_eval_ckpt.py 的 --mix-face（内置全套 HAZARD_KNOB_KEYS）。
+- **smoke golden 是构建敏感的**（同源码 build --force 重建即漂——LTO 并行非确定，上游 update_goldens 特意 pinned QEMU）：重建内核后必须重生成 golden 或预期 known-fail；跨机 golden 比较无意义（lab42 永远 known-fail 这两个）。
+- **MAX_ENTITIES_PER_CELL=64 是训练语义不是防御参数**：512 放宽在本地+lab42 双双打破 smoke golden——截断一直在静默塑形 CARLA obs。整城 bin 的密度问题必须在 bin 生成侧解决（顶点抽稀+超帽丢 extras），内核常量不动。
+- **相对路径 ckpt 在 devkit 下必崩**（run_simulation 切 cwd 到 group 深处）：一切传入 hydra/planner 的路径先 readlink -f 归一化。
+- **批量 pip install over ssh 会挂**（单命令多包 600s+ 超时两次）：逐包+uv+清华镜像；GitHub 不可达时 api tarball 经本地代理下载再 scp（api.github.com 走代理可达，尾部大文件截断不影响源码包）。

@@ -24,3 +24,7 @@
 - **`pkill -f` 自匹配第三次**（远程 ssh 命令串含模式即自杀）：一律 `[x]x` 括号技巧或按 PID。
 - **模型迁移必须连 config.yaml 一起搬**（本地渲染冠军模型时踩中）：pufferl eval 靠 ckpt 目录的 config.yaml 恢复架构，只拷 models/*.pt 会在加载时 RuntimeError。
 - **HTML 报告页验证必须作用于语义对象，不是源码子串**（GATE 页 `../2026-11-11-NIGHT-REPORT.html` 坏链接过检事故，2026-11-17）：DOM dump 检查 `'2026-11-11-NIGHT-REPORT.html' in dom` 是子串断言，链接层级错误照样 PASS。工具已固化：`scripts/check_report_links.py`（解析 href/src 按页面目录解析→逐一验存在），每次产出报告页必跑，与截图/DOM 检查并列；断言要测「浏览器会怎么解析」，不是「字符串在不在」。
+- **多链并行等卡必须按卡隔离进程归属**（gpu-return 链 we_running 全局 pgrep 匹配到另一卡的训练 → 双链互锁，0 卡空转 4.5h）：等待条件用 `pgrep -f "CUDA_VISIBLE_DEVICES=<n>"` 不可行（env 不在 cmdline），要么按精确 PID `kill -0` 等待，要么每链只管自己启动的进程。
+- **复合命令后台链的 echo "launched" 是假信号**（scp&&mv&&…&&nohup…& 形态两次断裂，产物从未启动）：启动确认必须验证产物侧效应（log 文件存在/目录创建/进程 cmdline 实读），长启动链拆成单条命令。
+- **art-dir 复用会被 state.json 的 dead 记录短路**（cap2048 三进宫：同目录 relaunch 直接 sweep complete）：dead 后重试必须换新 art-dir（-v2），或先清该臂 state 记录。
+- **评测面禁止手拼 env 键**（mix 面只给 hazard_enable+slots 两键，缺四开子旋钮 → 5.5h CPU 跑出第二份 clean，md5 相同才暴露）：一律走 scripts/t3_eval_ckpt.py 的 --mix-face（内置全套 HAZARD_KNOB_KEYS）。

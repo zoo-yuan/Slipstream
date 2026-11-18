@@ -1,8 +1,9 @@
 # STATE
 
-As-of: 夜班 2026-11-18 晨（E3@4×=v5 最强 ret 5.32/速度 4.71(+88%)/coll 0.0018；16× N=2 闭环 2.964/2.791；Y 首跑通；cap2048-v2 与 mix1600 在途）
+As-of: 39a5f31（夜班双卡战役：E3@4×=v5 最强 ret 5.32/速度 4.71(+88%)/coll 0.0018；16× N=2 闭环 → ADR-0009；效率轴+SPACeR 双采纳 → ADR-0010）
+（2026-11-18 晨：cap2048-v2 与 mix1600 重跑在途；E3 基座封定待 owner；验收页 artifacts/2026-11-18-DAWN-REPORT.html）
 （2026-11-17：owner 立项物流效率口径；v4 自博弈与 v5 效率轴均代码就绪等 GPU；SPACeR KL 锚定已采纳待提案；lab42 内核已重建同步）
-约定：AGENTS.md 是放置规则权威；strata 分层自 2026-11-03 启用；TerraZero 复刻 effort 活图在 `.wayfinder/map.md`（已完成）。**裁决真值在 `docs/adr/0001-0007`**（基底/配方v1/执法/运行时独立/奖励区间旋钮谱系/保守吸引子/熵破解配方v3）。
+约定：AGENTS.md 是放置规则权威；strata 分层自 2026-11-03 启用；TerraZero 复刻 effort 活图在 `.wayfinder/map.md`（已完成）。**裁决真值在 `docs/adr/0001-0010`**（基底/配方v1/执法/运行时独立/奖励区间旋钮谱系/保守吸引子/熵破解配方v3/步数硬通货/规模轴16×收官/效率轴+SPACeR 双采纳）。
 
 ## Where（现状）
 
@@ -24,11 +25,15 @@ As-of: 夜班 2026-11-18 晨（E3@4×=v5 最强 ret 5.32/速度 4.71(+88%)/coll 
 - `docs/2026-11-13-SOTA模型规格与ONNX导出及评测方法.md`（实证：obs 821 布局/12 类动作/7.6M 参数；ONNX 导出脚本 `scripts/export_onnx.py` + ORT 对拍 8.6e-6；评测面构造与指标计算逻辑）。
 - `.wayfinder/research/selfplay-v4-findings.md` + `val14-data-recon.md`（2026-11-13，路径②①实况修正）。
 - 夜间战役过程叙事在 `.scratch/night-2026-11-11.md`（易碎层）。
+- `docs/adr/0009-scale-axis-closure-16x-n2.md` + `docs/adr/0010-efficiency-axis-and-spacer-adoption.md`（2026-11-18 蒸馏：规模轴收官 + owner 双采纳；E3 基座 pending）。
 
 ## Next（下一步）
 
-- **待 owner**：①v5 效率轴已立项（owner 2026-11-17：物流配送，效率与安全同等，效率=流畅+顶限速；goal_speed=3.0 与真实需求相去甚远）——门1 提案进行中（.scratch/proposals/v5-goal-speed-proposal.md，goal_speed_mode=lane_limit 动态化+奖励联动+扫臂）；②v4 首跑排期（代码三门就绪；GPU 回归链 watcher 挂 lab42）；③**SPACeR KL/似然奖励锚定已采纳**（更新票 06 旧口径，与 snapshot-pool 正交可叠加，待门1提案）；④nuPlan AWS 注册 / Apollo 采样 bag+地图（双缺口不变，G1 转换器须保留 lane speed_limit 字段）；⑤push origin（本地领先 87+）。
-- **三门夜班交付（cb4b99e）**：SelfplayMixer（8 单测+冒烟，off 路径 RNG 位等价，Y/Z 臂）；speed_attainment.py（三门闭环：独立重算一致+三重交叉全零）；render-CHAMP16 画廊；nuplan-py39 环境（import+读 train db 验证）；64 场景顶格率样本跑中。
+- **待 owner**：①E3@4× 基座封定（lane_limit 任务下 S 系 α 重标与后续剂量迭代部坐此）；②数据双缺口：Apollo 采样 bag+HD 地图（log→map G1 点火件）、nuPlan val14 三件套（AWS 注册或上游搬）；③push origin（本地领先 95+）。
+- **在途自动收**：cap2048-v2（1 卡 ~13:20 完，容量轴第三试）；mix-1600 重跑（t3_eval_ckpt 全套 hazard 面 ~15:00 完）。
+- **代理可继续**：E3@4× 顶格率 replay（v5 验收门首个正式读数）；E3 vs 冠军画廊已交付（render-E3-4x）；S 系首跑等基座裁决；Y/Z 对照与 16×s43 N=2 已收。
+- 增益轴排序（晨班后）：E 系剂量/步数迭代（若基座封 E3）> S 系 SPACeR 首跑 > 容量（cap2048-v2 判读）> v4 Z 半混合对照；规模轴已收官（ADR-0009）。
+- 代码就绪件：v4 SelfplayMixer + v5 goal_speed_mode + SPACeR 锚定 + 顶格率管线（全部三门闭环，tests 226+ 绿）；已知缺口见 handoff 2026-11-17 §3（smoke 层无伙伴来源断言/Y-Z 与 v3 SPS 不可直比/快照池 epoch<interval 退化）。
 - 已知缺口（验证者发现，见 handoff §3）：smoke 层伙伴来源无断言；Y/Z 与 v3 SPS 不可直比（compile 分裂+probe 不含自博弈）；臂 epoch<interval(50) 时快照池退化。
 - 增益轴排序不变：容量（OOM 待解）> 自博弈 v4（代码就绪）> 超长程 lr 退火 > 堆规模（已过峰）；**新增：v5 效率轴（goal_speed）待裁决**。
 - 「顶格率」指标待建；v3/16× 外部基准验证（val14）数据未到位。
